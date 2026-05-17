@@ -995,13 +995,34 @@
     <ClCompile Include="Source\Engine\Mesh\Fbx\FbxAnimationImporter.cpp">
       <Filter>Source\Engine\Mesh\Fbx</Filter>
     </ClCompile>
+    <ClCompile Include="Source\Engine\Mesh\Fbx\FbxCollisionImporter.cpp">
+      <Filter>Source\Engine\Mesh\Fbx</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\Engine\Mesh\Fbx\FbxGeometryReader.cpp">
+      <Filter>Source\Engine\Mesh\Fbx</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\Engine\Mesh\Fbx\FbxImportValidation.cpp">
+      <Filter>Source\Engine\Mesh\Fbx</Filter>
+    </ClCompile>
     <ClCompile Include="Source\Engine\Mesh\Fbx\FbxMaterialImporter.cpp">
+      <Filter>Source\Engine\Mesh\Fbx</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\Engine\Mesh\Fbx\FbxMetadataImporter.cpp">
+      <Filter>Source\Engine\Mesh\Fbx</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\Engine\Mesh\Fbx\FbxMorphTargetImporter.cpp">
+      <Filter>Source\Engine\Mesh\Fbx</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\Engine\Mesh\Fbx\FbxSceneHierarchyImporter.cpp">
       <Filter>Source\Engine\Mesh\Fbx</Filter>
     </ClCompile>
     <ClCompile Include="Source\Engine\Mesh\Fbx\FbxSceneLoader.cpp">
       <Filter>Source\Engine\Mesh\Fbx</Filter>
     </ClCompile>
     <ClCompile Include="Source\Engine\Mesh\Fbx\FbxSceneQuery.cpp">
+      <Filter>Source\Engine\Mesh\Fbx</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\Engine\Mesh\Fbx\FbxSectionBuilder.cpp">
       <Filter>Source\Engine\Mesh\Fbx</Filter>
     </ClCompile>
     <ClCompile Include="Source\Engine\Mesh\Fbx\FbxSkeletalMeshImporter.cpp">
@@ -1011,6 +1032,9 @@
       <Filter>Source\Engine\Mesh\Fbx</Filter>
     </ClCompile>
     <ClCompile Include="Source\Engine\Mesh\Fbx\FbxSkinWeightImporter.cpp">
+      <Filter>Source\Engine\Mesh\Fbx</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\Engine\Mesh\Fbx\FbxSocketImporter.cpp">
       <Filter>Source\Engine\Mesh\Fbx</Filter>
     </ClCompile>
     <ClCompile Include="Source\Engine\Mesh\Fbx\FbxStaticMeshImporter.cpp">
@@ -1964,6 +1988,9 @@
     <ClInclude Include="Source\Engine\Mesh\MeshBinary.h">
       <Filter>Source\Engine\Mesh</Filter>
     </ClInclude>
+    <ClInclude Include="Source\Engine\Mesh\MeshCollisionAsset.h">
+      <Filter>Source\Engine\Mesh</Filter>
+    </ClInclude>
     <ClInclude Include="Source\Engine\Mesh\MeshImportOptions.h">
       <Filter>Source\Engine\Mesh</Filter>
     </ClInclude>
@@ -1991,19 +2018,40 @@
     <ClInclude Include="Source\Engine\Mesh\Fbx\FbxAnimationImporter.h">
       <Filter>Source\Engine\Mesh\Fbx</Filter>
     </ClInclude>
+    <ClInclude Include="Source\Engine\Mesh\Fbx\FbxCollisionImporter.h">
+      <Filter>Source\Engine\Mesh\Fbx</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Engine\Mesh\Fbx\FbxGeometryReader.h">
+      <Filter>Source\Engine\Mesh\Fbx</Filter>
+    </ClInclude>
     <ClInclude Include="Source\Engine\Mesh\Fbx\FbxImportContext.h">
       <Filter>Source\Engine\Mesh\Fbx</Filter>
     </ClInclude>
     <ClInclude Include="Source\Engine\Mesh\Fbx\FbxImportTypes.h">
       <Filter>Source\Engine\Mesh\Fbx</Filter>
     </ClInclude>
+    <ClInclude Include="Source\Engine\Mesh\Fbx\FbxImportValidation.h">
+      <Filter>Source\Engine\Mesh\Fbx</Filter>
+    </ClInclude>
     <ClInclude Include="Source\Engine\Mesh\Fbx\FbxMaterialImporter.h">
+      <Filter>Source\Engine\Mesh\Fbx</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Engine\Mesh\Fbx\FbxMetadataImporter.h">
+      <Filter>Source\Engine\Mesh\Fbx</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Engine\Mesh\Fbx\FbxMorphTargetImporter.h">
+      <Filter>Source\Engine\Mesh\Fbx</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Engine\Mesh\Fbx\FbxSceneHierarchyImporter.h">
       <Filter>Source\Engine\Mesh\Fbx</Filter>
     </ClInclude>
     <ClInclude Include="Source\Engine\Mesh\Fbx\FbxSceneLoader.h">
       <Filter>Source\Engine\Mesh\Fbx</Filter>
     </ClInclude>
     <ClInclude Include="Source\Engine\Mesh\Fbx\FbxSceneQuery.h">
+      <Filter>Source\Engine\Mesh\Fbx</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Engine\Mesh\Fbx\FbxSectionBuilder.h">
       <Filter>Source\Engine\Mesh\Fbx</Filter>
     </ClInclude>
     <ClInclude Include="Source\Engine\Mesh\Fbx\FbxSkeletalMeshImporter.h">
@@ -2015,6 +2063,9 @@
     <ClInclude Include="Source\Engine\Mesh\Fbx\FbxSkinWeightImporter.h">
       <Filter>Source\Engine\Mesh\Fbx</Filter>
     </ClInclude>
+    <ClInclude Include="Source\Engine\Mesh\Fbx\FbxSocketImporter.h">
+      <Filter>Source\Engine\Mesh\Fbx</Filter>
+    </ClInclude>
     <ClInclude Include="Source\Engine\Mesh\Fbx\FbxStaticMeshImporter.h">
       <Filter>Source\Engine\Mesh\Fbx</Filter>
     </ClInclude>
@@ -2022,6 +2073,9 @@
       <Filter>Source\Engine\Mesh\Fbx</Filter>
     </ClInclude>
     <ClInclude Include="Source\Engine\Mesh\Fbx\FbxTransformUtils.h">
+      <Filter>Source\Engine\Mesh\Fbx</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Engine\Mesh\Fbx\FbxVertexDeduplicator.h">
       <Filter>Source\Engine\Mesh\Fbx</Filter>
     </ClInclude>
     <ClInclude Include="Source\Engine\Object\FName.h">

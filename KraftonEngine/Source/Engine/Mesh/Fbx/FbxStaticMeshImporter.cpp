@@ -1,56 +1,261 @@
 #include "Mesh/Fbx/FbxStaticMeshImporter.h"
-#include "Mesh/Fbx/FbxSceneQuery.h"
-#include "Mesh/Fbx/FbxTransformUtils.h"
+
+#include "Mesh/Fbx/FbxCollisionImporter.h"
+#include "Mesh/Fbx/FbxGeometryReader.h"
 #include "Mesh/Fbx/FbxMaterialImporter.h"
-#include "Mesh/Fbx/FbxTangentBuilder.h"
+#include "Mesh/Fbx/FbxMetadataImporter.h"
+#include "Mesh/Fbx/FbxSceneHierarchyImporter.h"
+#include "Mesh/Fbx/FbxSceneQuery.h"
+#include "Mesh/Fbx/FbxSectionBuilder.h"
+#include "Mesh/Fbx/FbxTransformUtils.h"
+#include "Mesh/Fbx/FbxVertexDeduplicator.h"
 #include "Mesh/MeshImportOptions.h"
 #include "Materials/MaterialManager.h"
-#include "Core/Log.h"
 
 #include <algorithm>
-#include <cmath>
+#include <limits>
+#include <map>
+#include <utility>
 
-struct FFbxStaticVertexKey
+namespace
 {
-	int32 ControlPointIndex = -1;
-	float NormalX = 0.0f;
-	float NormalY = 0.0f;
-	float NormalZ = 0.0f;
-	float UVX = 0.0f;
-	float UVY = 0.0f;
-
-	bool operator==(const FFbxStaticVertexKey& Other) const
+	static int32 ResolveGlobalMaterialIndex(FbxNode* Node, FbxMesh* Mesh, int32 PolygonIndex, const FFbxImportContext& Context)
 	{
-		return ControlPointIndex == Other.ControlPointIndex
-			&& NormalX == Other.NormalX
-			&& NormalY == Other.NormalY
-			&& NormalZ == Other.NormalZ
-			&& UVX == Other.UVX
-			&& UVY == Other.UVY;
+		FbxSurfaceMaterial* Material = FFbxMaterialSlotResolver::ResolvePolygonMaterial(Node, Mesh, PolygonIndex);
+		auto It = Context.MaterialToSlotIndex.find(Material);
+		return (It != Context.MaterialToSlotIndex.end()) ? It->second : -1;
 	}
-};
 
-namespace std
-{
-template<>
-struct hash<FFbxStaticVertexKey>
-{
-	size_t operator()(const FFbxStaticVertexKey& Key) const noexcept
+	static TArray<FString> CollectStaticMaterialSlotNames(const TArray<FStaticMaterial>& Materials)
 	{
-		size_t Result = std::hash<int32>()(Key.ControlPointIndex);
-		auto Combine = [&Result](size_t Value)
+		TArray<FString> SlotNames;
+		SlotNames.reserve(Materials.size());
+		for (const FStaticMaterial& Material : Materials)
 		{
-			Result ^= Value + 0x9e3779b9 + (Result << 6) + (Result >> 2);
-		};
-
-		Combine(std::hash<float>()(Key.NormalX));
-		Combine(std::hash<float>()(Key.NormalY));
-		Combine(std::hash<float>()(Key.NormalZ));
-		Combine(std::hash<float>()(Key.UVX));
-		Combine(std::hash<float>()(Key.UVY));
-		return Result;
+			SlotNames.push_back(Material.MaterialSlotName);
+		}
+		return SlotNames;
 	}
-};
+
+	static FNormalVertex MakeStaticVertex(
+		FbxMesh* Mesh,
+		int32 PolygonIndex,
+		int32 CornerIndex,
+		int32 PolygonVertexIndex,
+		const FFbxMeshImportSpace& ImportSpace,
+		const FFbxTriangleSample& Triangle
+		)
+	{
+		FNormalVertex Vertex;
+		const int32 ControlPointIndex = Triangle.ControlPointIndices[CornerIndex];
+		Vertex.pos = Triangle.Positions[CornerIndex];
+
+		FVector Normal;
+		if (FFbxGeometryReader::TryReadNormal(Mesh, PolygonIndex, CornerIndex, Normal))
+		{
+			Vertex.normal = FFbxTransformUtils::TransformNormalByMatrix(Normal, ImportSpace.NormalTransform);
+		}
+		else
+		{
+			Vertex.normal = Triangle.FallbackNormal;
+		}
+		if (Vertex.normal.IsNearlyZero())
+		{
+			Vertex.normal = FVector::UpVector;
+		}
+
+		Vertex.NumUVs = static_cast<uint8>((std::min)(FFbxGeometryReader::GetUVSetCount(Mesh), MAX_STATIC_MESH_UV_CHANNELS));
+		if (Vertex.NumUVs == 0)
+		{
+			Vertex.NumUVs = 1;
+		}
+		Vertex.tex = FFbxGeometryReader::ReadUVByChannel(Mesh, PolygonIndex, CornerIndex, 0);
+		for (int32 UVIndex = 1; UVIndex < static_cast<int32>(Vertex.NumUVs) && UVIndex < MAX_STATIC_MESH_UV_CHANNELS; ++UVIndex)
+		{
+			Vertex.ExtraUV[UVIndex - 1] = FFbxGeometryReader::ReadUVByChannel(Mesh, PolygonIndex, CornerIndex, UVIndex);
+		}
+
+		Vertex.color = FFbxGeometryReader::ReadVertexColor(Mesh, ControlPointIndex, PolygonVertexIndex);
+
+		FVector4 ImportedTangent;
+		if (FFbxGeometryReader::TryReadTangent(Mesh, ControlPointIndex, PolygonVertexIndex, ImportedTangent))
+		{
+			const FVector Tangent(ImportedTangent.X, ImportedTangent.Y, ImportedTangent.Z);
+			const FVector ReferenceTangent = FFbxTransformUtils::TransformTangentByMatrix(Tangent, ImportSpace.VertexTransform, Vertex.normal);
+			Vertex.tangent = FVector4(ReferenceTangent.X, ReferenceTangent.Y, ReferenceTangent.Z, ImportedTangent.W);
+		}
+		else
+		{
+			FVector FallbackTangent = FFbxTransformUtils::OrthogonalizeTangentToNormal(Triangle.FallbackTangent, Vertex.normal);
+			Vertex.tangent = FVector4(FallbackTangent.X, FallbackTangent.Y, FallbackTangent.Z, 1.0f);
+		}
+
+		return Vertex;
+	}
+
+	static bool ImportLODFromNodes(
+		const TArray<FbxNode*>& Nodes,
+		int32 SourceLODIndex,
+		const FFbxImportContext& Context,
+		const FImportOptions& Options,
+		const TArray<FStaticMaterial>& Materials,
+		FStaticMeshLOD& OutLOD,
+		bool& bInOutNeedsNoneSlot
+		)
+	{
+		OutLOD = FStaticMeshLOD();
+		OutLOD.SourceLODIndex = SourceLODIndex;
+		OutLOD.SourceLODName = "LOD" + std::to_string(SourceLODIndex);
+
+		FFbxSectionBuilder Sections;
+		FFbxStaticVertexDeduplicator Deduplicator;
+
+		for (FbxNode* Node : Nodes)
+		{
+			FbxMesh* Mesh = Node ? Node->GetMesh() : nullptr;
+			if (!Mesh)
+			{
+				continue;
+			}
+
+			float ScreenSize = 1.0f;
+			float DistanceThreshold = 0.0f;
+			if (FFbxSceneQuery::TryGetLODSettings(Node, ScreenSize, DistanceThreshold))
+			{
+				OutLOD.ScreenSize = ScreenSize;
+				OutLOD.DistanceThreshold = DistanceThreshold;
+			}
+
+			FFbxMeshImportSpace ImportSpace = FFbxMeshImportSpace::FromStaticMeshNode(Node);
+			if (Options.StaticFbxSkinnedMeshPolicy == EStaticFbxSkinnedMeshPolicy::ImportBindPoseAsStatic)
+			{
+				const int32 SkinCount = Mesh->GetDeformerCount(FbxDeformer::eSkin);
+				FbxSkin* Skin = SkinCount > 0 ? static_cast<FbxSkin*>(Mesh->GetDeformer(0, FbxDeformer::eSkin)) : nullptr;
+				if (Skin && Skin->GetClusterCount() > 0)
+				{
+					FbxAMatrix MeshBindMatrix;
+					Skin->GetCluster(0)->GetTransformMatrix(MeshBindMatrix);
+					ImportSpace.VertexTransform = FFbxTransformUtils::ToEngineMatrix(MeshBindMatrix);
+					ImportSpace.NormalTransform = ImportSpace.VertexTransform.GetInverse().GetTransposed();
+				}
+			}
+			int32 PolygonVertexIndex = 0;
+
+			for (int32 PolygonIndex = 0; PolygonIndex < Mesh->GetPolygonCount(); ++PolygonIndex)
+			{
+				const int32 PolygonSize = Mesh->GetPolygonSize(PolygonIndex);
+				if (PolygonSize != 3)
+				{
+					PolygonVertexIndex += PolygonSize;
+					continue;
+				}
+
+				FFbxTriangleSample Triangle;
+				if (!FFbxGeometryReader::ReadTriangleSample(Mesh, PolygonIndex, ImportSpace, Triangle))
+				{
+					PolygonVertexIndex += PolygonSize;
+					continue;
+				}
+
+				const int32 MaterialIndex = ResolveGlobalMaterialIndex(Node, Mesh, PolygonIndex, Context);
+				FFbxImportedSectionBuild* Section = Sections.FindOrAddSection(MaterialIndex);
+				if (!Section)
+				{
+					PolygonVertexIndex += PolygonSize;
+					continue;
+				}
+
+				uint32 PendingIndices[3] = {};
+				bool bValidTriangle = true;
+				for (int32 CornerIndex = 0; CornerIndex < 3; ++CornerIndex)
+				{
+					const int32 ControlPointIndex = Triangle.ControlPointIndices[CornerIndex];
+					if (!FFbxSceneQuery::IsValidControlPointIndex(Mesh, ControlPointIndex))
+					{
+						bValidTriangle = false;
+						break;
+					}
+
+					FNormalVertex Vertex = MakeStaticVertex(Mesh, PolygonIndex, CornerIndex, PolygonVertexIndex + CornerIndex, ImportSpace, Triangle);
+					bool bAddedNewVertex = false;
+					PendingIndices[CornerIndex] = Deduplicator.FindOrAdd(Vertex, Mesh, ControlPointIndex, MaterialIndex, OutLOD.Vertices, bAddedNewVertex);
+				}
+
+				if (bValidTriangle)
+				{
+					Section->Indices.push_back(PendingIndices[0]);
+					Section->Indices.push_back(PendingIndices[1]);
+					Section->Indices.push_back(PendingIndices[2]);
+				}
+
+				PolygonVertexIndex += PolygonSize;
+			}
+		}
+
+		if (Sections.IsEmpty())
+		{
+			return false;
+		}
+
+		const TArray<FString> MaterialSlotNames = CollectStaticMaterialSlotNames(Materials);
+		Sections.BuildFinalStaticSections(MaterialSlotNames, OutLOD.Indices, OutLOD.Sections, &bInOutNeedsNoneSlot);
+		OutLOD.CacheBounds();
+		return !OutLOD.Vertices.empty() && !OutLOD.Indices.empty();
+	}
+
+	static void AddDefaultNoneMaterialIfNeeded(TArray<FStaticMaterial>& Materials, FStaticMesh& Mesh, bool bNeedsNoneSlot)
+	{
+		if (!bNeedsNoneSlot)
+		{
+			return;
+		}
+
+		int32 NoneMaterialIndex = -1;
+		for (int32 MaterialIndex = 0; MaterialIndex < static_cast<int32>(Materials.size()); ++MaterialIndex)
+		{
+			if (Materials[MaterialIndex].MaterialSlotName == "None")
+			{
+				NoneMaterialIndex = MaterialIndex;
+				break;
+			}
+		}
+
+		if (NoneMaterialIndex < 0)
+		{
+			FStaticMaterial DefaultMaterial;
+			DefaultMaterial.MaterialSlotName = "None";
+			DefaultMaterial.MaterialInterface = FMaterialManager::Get().GetOrCreateMaterial("None");
+			Materials.push_back(DefaultMaterial);
+			NoneMaterialIndex = static_cast<int32>(Materials.size()) - 1;
+		}
+
+		for (FStaticMeshSection& Section : Mesh.Sections)
+		{
+			if (Section.MaterialSlotName == "None")
+			{
+				Section.MaterialIndex = NoneMaterialIndex;
+			}
+		}
+		for (FStaticMeshLOD& LOD : Mesh.LODModels)
+		{
+			for (FStaticMeshSection& Section : LOD.Sections)
+			{
+				if (Section.MaterialSlotName == "None")
+				{
+					Section.MaterialIndex = NoneMaterialIndex;
+				}
+			}
+		}
+	}
+
+	static FMatrix GetStaticCollisionLocalMatrix(FbxNode* CollisionNode)
+	{
+		if (!CollisionNode)
+		{
+			return FMatrix::Identity;
+		}
+		return FFbxTransformUtils::ToEngineMatrix(CollisionNode->EvaluateGlobalTransform() * FFbxTransformUtils::GetGeometryTransform(CollisionNode));
+	}
 }
 
 bool FFbxStaticMeshImporter::Import(FbxScene* Scene, const FString& SourcePath, const FImportOptions* Options, FFbxImportContext& Context, FFbxStaticMeshImportResult& OutResult, FString* OutMessage)
@@ -69,203 +274,63 @@ bool FFbxStaticMeshImporter::Import(FbxScene* Scene, const FString& SourcePath, 
 
 	FFbxSceneQuery::CollectAllNodes(RootNode, Context.AllNodes);
 	FFbxSceneQuery::CollectMeshNodes(RootNode, Context.MeshNodes);
+	FFbxSceneHierarchyImporter::CollectSceneNodes(Scene, OutResult.Mesh.SceneNodes);
+	FFbxMetadataImporter::CollectSceneNodeMetadata(Scene, OutResult.Mesh.NodeMetadata);
+
 	FFbxMaterialImporter::CollectMaterials(Scene, Context);
 	FFbxMaterialImporter::BuildStaticMaterials(Context, OutResult.Materials);
 
-	TArray<FVector> StaticTangentSums;
-	TArray<FVector> StaticBitangentSums;
+	std::map<int32, TArray<FbxNode*>> RenderNodesByLOD;
+	const FImportOptions EffectiveOptions = Options ? *Options : FImportOptions::Default();
+	for (FbxNode* MeshNode : Context.MeshNodes)
+	{
+		if (!MeshNode)
+		{
+			continue;
+		}
+
+		if (FFbxSceneQuery::IsCollisionProxyNode(MeshNode))
+		{
+			FImportedCollisionShape Shape;
+			if (FFbxCollisionImporter::ImportCollisionShape(MeshNode, GetStaticCollisionLocalMatrix(MeshNode), -1, FString(), Shape))
+			{
+				OutResult.Mesh.CollisionShapes.push_back(std::move(Shape));
+			}
+			continue;
+		}
+
+		FbxMesh* Mesh = MeshNode->GetMesh();
+		const bool bHasSkin = Mesh && FFbxSceneQuery::MeshHasSkin(Mesh);
+		if (bHasSkin && EffectiveOptions.StaticFbxSkinnedMeshPolicy == EStaticFbxSkinnedMeshPolicy::Skip)
+		{
+			continue;
+		}
+
+		RenderNodesByLOD[FFbxSceneQuery::GetMeshLODIndex(MeshNode)].push_back(MeshNode);
+	}
+
 	bool bNeedsNoneSlot = OutResult.Materials.empty();
-
-	for (FbxNode* Node : Context.AllNodes)
+	for (const auto& Pair : RenderNodesByLOD)
 	{
-		if (!Node)
+		FStaticMeshLOD LOD;
+		if (!ImportLODFromNodes(Pair.second, Pair.first, Context, EffectiveOptions, OutResult.Materials, LOD, bNeedsNoneSlot))
 		{
 			continue;
 		}
 
-		FbxMesh* Mesh = Node->GetMesh();
-		if (!Mesh)
+		if (OutResult.Mesh.LODModels.empty())
 		{
-			continue;
+			OutResult.Mesh.Vertices = LOD.Vertices;
+			OutResult.Mesh.Indices = LOD.Indices;
+			OutResult.Mesh.Sections = LOD.Sections;
 		}
 
-		const int32                       SkinCount         = Mesh->GetDeformerCount(FbxDeformer::eSkin);
-		FbxSkin*                          Skin              = SkinCount > 0 ? static_cast<FbxSkin*>(Mesh->GetDeformer(0, FbxDeformer::eSkin)) : nullptr;
-		const bool                        bHasSkin          = Skin && Skin->GetClusterCount() > 0;
-		const FImportOptions              EffectiveOptions  = Options ? *Options : FImportOptions::Default();
-		const EStaticFbxSkinnedMeshPolicy SkinnedMeshPolicy = EffectiveOptions.StaticFbxSkinnedMeshPolicy;
-
-		FbxAMatrix NodeGeometryTransform = FFbxTransformUtils::GetGeometryTransform(Node);
-		FMatrix MeshToWorld = FFbxTransformUtils::ToEngineMatrix(Node->EvaluateGlobalTransform() * NodeGeometryTransform);
-
-		if (bHasSkin)
-		{
-			switch (SkinnedMeshPolicy)
-			{
-			case EStaticFbxSkinnedMeshPolicy::Skip:
-				continue;
-			case EStaticFbxSkinnedMeshPolicy::ImportBindPoseAsStatic:
-			{
-				FbxAMatrix MeshBindMatrix;
-				Skin->GetCluster(0)->GetTransformMatrix(MeshBindMatrix);
-				MeshToWorld = FFbxTransformUtils::ToEngineMatrix(MeshBindMatrix);
-				break;
-			}
-			}
-		}
-
-		FbxStringList UVSetNames;
-		Mesh->GetUVSetNames(UVSetNames);
-		const char* UVName = (UVSetNames.GetCount() > 0) ? UVSetNames.GetStringAt(0) : nullptr;
-
-		TArray<int32> LocalToGlobalMaterialIndex;
-		LocalToGlobalMaterialIndex.resize(Node->GetMaterialCount());
-		for (int32 LocalIndex = 0; LocalIndex < Node->GetMaterialCount(); ++LocalIndex)
-		{
-			FbxSurfaceMaterial* Material = Node->GetMaterial(LocalIndex);
-			auto It = Context.MaterialToSlotIndex.find(Material);
-			LocalToGlobalMaterialIndex[LocalIndex] = (It != Context.MaterialToSlotIndex.end()) ? It->second : -1;
-		}
-
-		TMap<int32, TArray<uint32>> SectionIndicesMap;
-		TMap<FFbxStaticVertexKey, uint32> VertexMap;
-
-		for (int32 PolygonIndex = 0; PolygonIndex < Mesh->GetPolygonCount(); ++PolygonIndex)
-		{
-			if (Mesh->GetPolygonSize(PolygonIndex) != 3)
-			{
-				continue;
-			}
-
-			const int32 LocalMaterialIndex = FFbxMaterialImporter::GetMaterialIndex(Mesh, PolygonIndex);
-			int32 GlobalMaterialIndex = -1;
-			if (LocalMaterialIndex >= 0 && LocalMaterialIndex < static_cast<int32>(LocalToGlobalMaterialIndex.size()))
-			{
-				GlobalMaterialIndex = LocalToGlobalMaterialIndex[LocalMaterialIndex];
-			}
-
-			uint32 TriIndices[3] = {};
-			uint32 PendingSectionIndices[3] = {};
-			bool bValidTriangle = true;
-
-			for (int32 CornerIndex = 0; CornerIndex < 3; ++CornerIndex)
-			{
-				FNormalVertex Vertex;
-				const int32 CPIndex = Mesh->GetPolygonVertex(PolygonIndex, CornerIndex);
-				if (!FFbxSceneQuery::IsValidControlPointIndex(Mesh, CPIndex))
-				{
-					bValidTriangle = false;
-					break;
-				}
-
-				FbxVector4 CP = Mesh->GetControlPointAt(CPIndex);
-				Vertex.pos = MeshToWorld.TransformPositionWithW(FVector(static_cast<float>(CP[0]), static_cast<float>(CP[1]), static_cast<float>(CP[2])));
-
-				FbxVector4 Normal;
-				Mesh->GetPolygonVertexNormal(PolygonIndex, CornerIndex, Normal);
-				Normal.Normalize();
-				Vertex.normal = MeshToWorld.TransformVector(FVector(static_cast<float>(Normal[0]), static_cast<float>(Normal[1]), static_cast<float>(Normal[2])));
-				if (!Vertex.normal.IsNearlyZero())
-				{
-					Vertex.normal.Normalize();
-				}
-
-				Vertex.color = FVector4(1.0f, 1.0f, 1.0f, 1.0f);
-				Vertex.tex = FVector2(0.0f, 0.0f);
-				if (UVName)
-				{
-					FbxVector2 UV;
-					bool bUnmappedUV = false;
-					const bool bSuccess = Mesh->GetPolygonVertexUV(PolygonIndex, CornerIndex, UVName, UV, bUnmappedUV);
-					if (bSuccess && !bUnmappedUV)
-					{
-						Vertex.tex = FVector2(static_cast<float>(UV[0]), 1.0f - static_cast<float>(UV[1]));
-					}
-				}
-
-				FFbxStaticVertexKey Key;
-				Key.ControlPointIndex = CPIndex;
-				Key.NormalX = Vertex.normal.X;
-				Key.NormalY = Vertex.normal.Y;
-				Key.NormalZ = Vertex.normal.Z;
-				Key.UVX = Vertex.tex.X;
-				Key.UVY = Vertex.tex.Y;
-
-				uint32 VertexIndex = 0;
-				auto It = VertexMap.find(Key);
-				if (It != VertexMap.end())
-				{
-					VertexIndex = It->second;
-				}
-				else
-				{
-					VertexIndex = static_cast<uint32>(OutResult.Mesh.Vertices.size());
-					OutResult.Mesh.Vertices.push_back(Vertex);
-					StaticTangentSums.push_back(FVector::ZeroVector);
-					StaticBitangentSums.push_back(FVector::ZeroVector);
-					VertexMap[Key] = VertexIndex;
-				}
-
-				TriIndices[CornerIndex] = VertexIndex;
-				PendingSectionIndices[CornerIndex] = VertexIndex;
-			}
-
-			if (!bValidTriangle)
-			{
-				continue;
-			}
-
-			for (uint32 VertexIndex : PendingSectionIndices)
-			{
-				SectionIndicesMap[GlobalMaterialIndex].push_back(VertexIndex);
-			}
-
-			FFbxTangentBuilder::AccumulateStaticTriangle(OutResult.Mesh, TriIndices, StaticTangentSums, StaticBitangentSums);
-		}
-
-		uint32 CurrentBaseIndex = static_cast<uint32>(OutResult.Mesh.Indices.size());
-		for (auto& Pair : SectionIndicesMap)
-		{
-			FStaticMeshSection Section;
-			const int32 MatIndex = Pair.first;
-			if (MatIndex >= 0 && MatIndex < static_cast<int32>(Context.Materials.size()))
-			{
-				Section.MaterialSlotName = Context.Materials[MatIndex].Name;
-				Section.MaterialIndex = MatIndex;
-			}
-			else
-			{
-				Section.MaterialSlotName = "None";
-				Section.MaterialIndex = -1;
-				bNeedsNoneSlot = true;
-			}
-
-			Section.FirstIndex = CurrentBaseIndex;
-			Section.NumTriangles = static_cast<uint32>(Pair.second.size() / 3);
-			CurrentBaseIndex += static_cast<uint32>(Pair.second.size());
-			OutResult.Mesh.Indices.insert(OutResult.Mesh.Indices.end(), Pair.second.begin(), Pair.second.end());
-			OutResult.Mesh.Sections.push_back(Section);
-		}
+		OutResult.Mesh.LODModels.push_back(std::move(LOD));
 	}
 
-	if (bNeedsNoneSlot)
-	{
-		FStaticMaterial DefaultMaterial;
-		DefaultMaterial.MaterialSlotName = "None";
-		DefaultMaterial.MaterialInterface = FMaterialManager::Get().GetOrCreateMaterial("None");
-		OutResult.Materials.push_back(DefaultMaterial);
-		const int32 NoneMaterialIndex = static_cast<int32>(OutResult.Materials.size()) - 1;
-		for (FStaticMeshSection& Section : OutResult.Mesh.Sections)
-		{
-			if (Section.MaterialSlotName == "None")
-			{
-				Section.MaterialIndex = NoneMaterialIndex;
-			}
-		}
-	}
-
-	FFbxTangentBuilder::FinalizeStaticTangents(OutResult.Mesh, StaticTangentSums, StaticBitangentSums);
+	AddDefaultNoneMaterialIfNeeded(OutResult.Materials, OutResult.Mesh, bNeedsNoneSlot);
 	OutResult.Mesh.PathFileName = SourcePath;
+	OutResult.Mesh.CacheBounds();
 	OutResult.SourceMaterials = Context.Materials;
 
 	const bool bImportedAnyGeometry = !OutResult.Mesh.Vertices.empty() && !OutResult.Mesh.Indices.empty();

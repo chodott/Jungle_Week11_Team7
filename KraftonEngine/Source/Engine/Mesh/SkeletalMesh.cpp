@@ -28,12 +28,20 @@ void USkeletalMesh::Serialize(FArchive& Ar)
 	Ar << SkeletalMeshAsset->MeshRanges;
 	Ar << SkeletalMeshAsset->Bones;
 	Ar << SkeletalMaterials;
+	Ar << SkeletalMeshAsset->MorphTargets;
+	Ar << SkeletalMeshAsset->StaticChildMeshes;
+	Ar << SkeletalMeshAsset->SplitStaticMeshes;
+	Ar << SkeletalMeshAsset->CollisionShapes;
+	Ar << SkeletalMeshAsset->Sockets;
+	Ar << SkeletalMeshAsset->NodeMetadata;
+	Ar << SkeletalMeshAsset->SceneNodes;
+	Ar << SkeletalMeshAsset->ImportSummary;
 
 	if (Ar.IsLoading())
 	{
         SyncSkeletonBindingFromAsset();
 		CacheSectionMaterialIndices();
-		SkeletalMeshAsset->bBoundsValid = false;
+        SkeletalMeshAsset->CacheBounds();
 	}
 }
 

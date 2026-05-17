@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "MeshComponent.h"
 
 #include "Math/Rotator.h"
@@ -60,6 +60,11 @@ public:
 
 	void SetBoneLocalTransforms(const TArray<FTransform>& LocalPose);
 
+	// Morph target weights are component-local runtime overrides. Weight 1.0f means the imported 100% FBX shape.
+	void  SetMorphTarget(const FString& MorphTargetName, float Weight);
+	float GetMorphTargetWeight(const FString& MorphTargetName) const;
+	void  ClearMorphTargets();
+
 	void GetCurrentBoneGlobalTransforms(TArray<FTransform>& OutGlobals) const;
 	void GetCurrentBoneGlobalMatrices(TArray<FMatrix>& OutGlobals) const;
 	const TArray<FVertexPNCTT>& GetSkinnedVertices() const { return SkinnedVertices; }
@@ -87,6 +92,9 @@ protected:
 	// Bone edit pose는 asset 원본 bone을 직접 바꾸지 않고 component-local override로만 유지한다.
 	TArray<FMatrix> BoneEditLocalMatrices;
 	bool bUseBoneEditPose = false;
+
+	// Runtime morph weights keyed by imported FBX BlendShapeChannel/morph name.
+	TMap<FString, float> MorphTargetWeights;
 
 	// SceneProxy는 이 결과와 revision만 보고 dynamic vertex buffer를 갱신한다.
 	TArray<FVertexPNCTT> SkinnedVertices;

@@ -375,6 +375,55 @@ static bool RemapSkeletalMeshToSkeleton(
 		}
 	}
 
+
+	auto RemapParentBoneReference = [&](int32& InOutBoneIndex, FString& InOutBoneName) -> bool
+	{
+		if (InOutBoneIndex < 0)
+		{
+			InOutBoneName.clear();
+			return true;
+		}
+
+		const int32 TargetBoneIndex = Remap.GetTargetBoneIndex(InOutBoneIndex);
+		if (TargetBoneIndex < 0 || TargetBoneIndex >= TargetRef.GetNumBones())
+		{
+			if (OutReport)
+			{
+				OutReport->Result = ESkeletonCompatibilityResult::Incompatible;
+				OutReport->Reason = "imported attachment references an unmapped source bone";
+			}
+			return false;
+		}
+
+		InOutBoneIndex = TargetBoneIndex;
+		InOutBoneName = TargetRef.Bones[TargetBoneIndex].Name;
+		return true;
+	};
+
+	for (FSkeletalSocket& Socket : Mesh.Sockets)
+	{
+		if (!RemapParentBoneReference(Socket.ParentBoneIndex, Socket.ParentBoneName))
+		{
+			return false;
+		}
+	}
+
+	for (FImportedCollisionShape& Shape : Mesh.CollisionShapes)
+	{
+		if (!RemapParentBoneReference(Shape.ParentBoneIndex, Shape.ParentBoneName))
+		{
+			return false;
+		}
+	}
+
+	for (FSkeletalStaticChildMesh& Child : Mesh.StaticChildMeshes)
+	{
+		if (!RemapParentBoneReference(Child.ParentBoneIndex, Child.ParentBoneName))
+		{
+			return false;
+		}
+	}
+
 	Mesh.Bones = std::move(RemappedBones);
 
 	const FSkeletonBinding Binding      = TargetSkeleton->GetSkeletonBinding();

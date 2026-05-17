@@ -13,4 +13,24 @@ public:
 	static bool MeshHasSkin(FbxMesh* Mesh);
 	static bool SceneHasSkinDeformer(FbxScene* Scene);
 	static bool IsValidControlPointIndex(const FbxMesh* Mesh, int32 ControlPointIndex);
+
+	static bool    ContainsNode(const TArray<FbxNode*>& Nodes, const FbxNode* Node);
+	static void    AddUniqueNode(TArray<FbxNode*>& Nodes, FbxNode* Node);
+	static bool    IsSceneRootNode(FbxNode* Node);
+	static FString ReadStringProperty(FbxNode* Node, const char* PropertyName);
+
+	static int32 ParseLODIndexFromName(const FString& Name);
+	static int32 GetMeshLODIndex(FbxNode* MeshNode);
+	static bool  TryGetFloatProperty(FbxNode* Node, const char* PropertyName, float& OutValue);
+	static bool  TryGetLODSettings(FbxNode* MeshNode, float& OutScreenSize, float& OutDistanceThreshold);
+
+	static bool IsCollisionProxyName(const FString& Name);
+	static bool IsCollisionProxyNode(FbxNode* Node);
+
+	static bool    IsSocketName(const FString& Name);
+	static bool    IsSocketNode(FbxNode* Node);
+	static FString GetSocketName(FbxNode* Node);
+	static void    CollectSocketNodes(FbxNode* Node, TArray<FbxNode*>& OutSocketNodes);
+
+	static bool FindNearestParentBoneIndex(FbxNode* Node, const TMap<FbxNode*, int32>& BoneNodeToIndex, FbxNode*& OutBoneNode, int32& OutBoneIndex);
 };

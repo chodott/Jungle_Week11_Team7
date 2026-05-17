@@ -1,4 +1,4 @@
-﻿#include "SkinnedMeshComponent.h"
+#include "SkinnedMeshComponent.h"
 #include "Mesh/SkeletalMesh.h"
 #include "Serialization/Archive.h"
 #include "Runtime/Engine.h"
@@ -7,6 +7,8 @@
 #include "Core/Log.h"
 #include "Render/Types/ViewTypes.h"
 #include "Engine/Profiling/Stats.h"
+
+#include <cmath>
 
 IMPLEMENT_CLASS(USkinnedMeshComponent, UMeshComponent)
 HIDE_FROM_COMPONENT_LIST(USkinnedMeshComponent)
@@ -450,6 +452,38 @@ void USkinnedMeshComponent::SetBoneLocalTransforms(const TArray<FTransform>& Loc
 	MarkWorldBoundsDirty();
 }
 
+
+void USkinnedMeshComponent::SetMorphTarget(const FString& MorphTargetName, float Weight)
+{
+	if (MorphTargetName.empty()) return;
+
+	if (std::fabs(Weight) <= 1.0e-6f)
+	{
+		MorphTargetWeights.erase(MorphTargetName);
+	}
+	else
+	{
+		MorphTargetWeights[MorphTargetName] = Weight;
+	}
+
+	RefreshSkinningAfterPoseChanged();
+	MarkWorldBoundsDirty();
+}
+
+float USkinnedMeshComponent::GetMorphTargetWeight(const FString& MorphTargetName) const
+{
+	auto It = MorphTargetWeights.find(MorphTargetName);
+	return It != MorphTargetWeights.end() ? It->second : 0.0f;
+}
+
+void USkinnedMeshComponent::ClearMorphTargets()
+{
+	if (MorphTargetWeights.empty()) return;
+	MorphTargetWeights.clear();
+	RefreshSkinningAfterPoseChanged();
+	MarkWorldBoundsDirty();
+}
+
 void USkinnedMeshComponent::GetCurrentBoneGlobalTransforms(TArray<FTransform>& OutGlobals) const
 {
 	BuildBoneEditGlobalTransforms(OutGlobals);
@@ -545,6 +579,64 @@ void USkinnedMeshComponent::UpdateCPUSkinning()
 	TArray<FMatrix> BoneGlobals;
 	GetCurrentBoneGlobalMatrices(BoneGlobals);
 
+	// Morph target은 skinning 전에 source vertex 공간에서 delta를 더한다.
+	auto ApplyMorphTargetsToVertex = [&](uint32 VertexIndex, FVertexPNCTBW& InOutVertex)
+	{
+		if (MorphTargetWeights.empty() || Asset->MorphTargets.empty()) return;
+
+		for (const auto& WeightPair : MorphTargetWeights)
+		{
+			const FString& MorphName = WeightPair.first;
+			const float Weight = WeightPair.second;
+			if (std::fabs(Weight) <= 1.0e-6f) continue;
+
+			const FMorphTarget* Morph = nullptr;
+			for (const FMorphTarget& Candidate : Asset->MorphTargets)
+			{
+				if (Candidate.Name == MorphName)
+				{
+					Morph = &Candidate;
+					break;
+				}
+			}
+
+			if (!Morph || Morph->LODModels.empty()) continue;
+
+			const FMorphTargetLOD& MorphLOD = Morph->LODModels[0];
+			if (MorphLOD.Shapes.empty()) continue;
+
+			// Source는 현재 LOD0만 그리므로 100% shape 또는 마지막 in-between shape를 사용한다.
+			const FMorphTargetShape* Shape = &MorphLOD.Shapes.back();
+			for (const FMorphTargetShape& CandidateShape : MorphLOD.Shapes)
+			{
+				if (std::fabs(CandidateShape.FullWeight - 100.0f) <= 1.0e-3f)
+				{
+					Shape = &CandidateShape;
+					break;
+				}
+			}
+
+			float ShapeScale = Weight;
+			if (std::fabs(Shape->FullWeight) > 1.0e-6f && std::fabs(Shape->FullWeight - 100.0f) > 1.0e-3f)
+			{
+				ShapeScale = (Weight * 100.0f) / Shape->FullWeight;
+			}
+
+			for (const FMorphTargetDelta& Delta : Shape->Deltas)
+			{
+				if (Delta.VertexIndex != VertexIndex) continue;
+				InOutVertex.Position += Delta.PositionDelta * ShapeScale;
+				InOutVertex.Normal += Delta.NormalDelta * ShapeScale;
+				FVector TangentDelta(Delta.TangentDelta.X, Delta.TangentDelta.Y, Delta.TangentDelta.Z);
+				FVector Tangent(InOutVertex.Tangent.X, InOutVertex.Tangent.Y, InOutVertex.Tangent.Z);
+				Tangent += TangentDelta * ShapeScale;
+				InOutVertex.Tangent = FVector4(Tangent.X, Tangent.Y, Tangent.Z, InOutVertex.Tangent.W + Delta.TangentDelta.W * ShapeScale);
+			}
+		}
+
+		if (!InOutVertex.Normal.IsNearlyZero()) InOutVertex.Normal.Normalize();
+	};
+
 	// FBX import 결과가 mesh range별 bind global을 가질 수 있어 range 단위 skinning을 유지한다.
 	auto SkinVertexRange = [&](uint32 VertexStart, uint32 VertexEnd, const FMatrix& MeshBindGlobal)
 		{
@@ -564,7 +656,8 @@ void USkinnedMeshComponent::UpdateCPUSkinning()
 			VertexEnd = std::min<uint32>(VertexEnd, (uint32)Asset->Vertices.size());
 			for (uint32 i = VertexStart; i < VertexEnd; ++i)
 			{
-				const FVertexPNCTBW& Src = Asset->Vertices[i];
+				FVertexPNCTBW Src = Asset->Vertices[i];
+				ApplyMorphTargetsToVertex(i, Src);
 				FVertexPNCTT& Dst = SkinnedVertices[i];
 
 				FVector SkinnedPos = FVector::ZeroVector;

@@ -9,6 +9,39 @@
 
 IMPLEMENT_CLASS(UStaticMesh, UObject)
 
+namespace
+{
+	static void CacheStaticSectionMaterialIndices(FStaticMesh* StaticMeshAsset, const TArray<FStaticMaterial>& StaticMaterials)
+	{
+		if (!StaticMeshAsset)
+		{
+			return;
+		}
+
+		auto CacheSections = [&StaticMaterials](TArray<FStaticMeshSection>& Sections)
+		{
+			for (FStaticMeshSection& Section : Sections)
+			{
+				Section.MaterialIndex = -1;
+				for (int32 i = 0; i < static_cast<int32>(StaticMaterials.size()); ++i)
+				{
+					if (StaticMaterials[i].MaterialSlotName == Section.MaterialSlotName)
+					{
+						Section.MaterialIndex = i;
+						break;
+					}
+				}
+			}
+		};
+
+		CacheSections(StaticMeshAsset->Sections);
+		for (FStaticMeshLOD& LOD : StaticMeshAsset->LODModels)
+		{
+			CacheSections(LOD.Sections);
+		}
+	}
+}
+
 UStaticMesh::~UStaticMesh()
 {
 	if (StaticMeshAsset)
@@ -38,18 +71,7 @@ void UStaticMesh::Serialize(FArchive& Ar)
 	// 3. 로딩 시 Section → MaterialIndex 매핑 캐싱 (매 프레임 문자열 비교 방지)
 	if (Ar.IsLoading())
 	{
-		for (FStaticMeshSection& Section : StaticMeshAsset->Sections)
-		{
-			Section.MaterialIndex = -1;
-			for (int32 i = 0; i < (int32)StaticMaterials.size(); ++i)
-			{
-				if (StaticMaterials[i].MaterialSlotName == Section.MaterialSlotName)
-				{
-					Section.MaterialIndex = i;
-					break;
-				}
-			}
-		}
+		CacheStaticSectionMaterialIndices(StaticMeshAsset, StaticMaterials);
 	}
 }
 
@@ -123,18 +145,7 @@ void UStaticMesh::SetStaticMeshAsset(FStaticMesh* InMesh)
 	// Section → MaterialIndex 캐싱 갱신
 	if (StaticMeshAsset)
 	{
-		for (FStaticMeshSection& Section : StaticMeshAsset->Sections)
-		{
-			Section.MaterialIndex = -1;
-			for (int32 i = 0; i < (int32)StaticMaterials.size(); ++i)
-			{
-				if (StaticMaterials[i].MaterialSlotName == Section.MaterialSlotName)
-				{
-					Section.MaterialIndex = i;
-					break;
-				}
-			}
-		}
+		CacheStaticSectionMaterialIndices(StaticMeshAsset, StaticMaterials);
 		EnsureMeshTrianglePickingBVHBuilt();
 	}
 }
@@ -147,6 +158,7 @@ FStaticMesh* UStaticMesh::GetStaticMeshAsset() const
 void UStaticMesh::SetStaticMaterials(TArray<FStaticMaterial>&& InMaterials)
 {
 	StaticMaterials = InMaterials;
+	CacheStaticSectionMaterialIndices(StaticMeshAsset, StaticMaterials);
 }
 
 const TArray<FStaticMaterial>& UStaticMesh::GetStaticMaterials() const

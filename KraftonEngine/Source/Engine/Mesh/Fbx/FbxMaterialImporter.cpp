@@ -152,26 +152,6 @@ void FFbxMaterialImporter::CollectMaterials(FbxScene* Scene, FFbxImportContext& 
 	}
 }
 
-int32 FFbxMaterialImporter::GetMaterialIndex(FbxMesh* Mesh, int32 PolygonIndex)
-{
-	FbxLayerElementMaterial* LayerElementMaterial = Mesh ? Mesh->GetElementMaterial() : nullptr;
-	if (!LayerElementMaterial)
-	{
-		return -1;
-	}
-
-	FbxLayerElementArrayTemplate<int32>& MaterialIndices = LayerElementMaterial->GetIndexArray();
-	switch (LayerElementMaterial->GetMappingMode())
-	{
-	case FbxLayerElement::eAllSame:
-		return MaterialIndices[0];
-	case FbxLayerElement::eByPolygon:
-		return MaterialIndices[PolygonIndex];
-	default:
-		return 0;
-	}
-}
-
 void FFbxMaterialImporter::BuildStaticMaterials(const FFbxImportContext& Context, TArray<FStaticMaterial>& OutMaterials)
 {
 	OutMaterials.clear();
