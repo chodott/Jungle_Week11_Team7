@@ -2,29 +2,24 @@
 
 #include "Core/PropertyTypes.h"
 
-struct FEnumProperty : FProperty
+struct FNameProperty : FProperty
 {
-	const FEnum* EnumType = nullptr;
-
-	FEnumProperty() = default;
-	FEnumProperty(
+	FNameProperty() = default;
+	FNameProperty(
 		const char* InName,
 		const char* InCategory,
 		uint32 InFlags,
 		size_t InOffset,
 		size_t InSize,
-		const FEnum* InEnumType,
 		const char* InDisplayName,
 		const TMap<FString, FString>& InMetadata,
 		const char* InOwnerClassName)
 		: FProperty(InName, InCategory, InFlags, InOffset, InSize, InDisplayName, InMetadata, InOwnerClassName)
-		, EnumType(InEnumType)
 	{
 	}
 
-	EPropertyType GetType() const override { return EPropertyType::Enum; }
-	const FEnum* GetEnumType() const override { return EnumType; }
-	const FEnumProperty* AsEnumProperty() const override { return this; }
+	EPropertyType GetType() const override { return EPropertyType::Name; }
+	const FNameProperty* AsNameProperty() const override { return this; }
 
 	json::JSON Serialize(void* Container) const override;
 	void	   Deserialize(void* Container, json::JSON& Value) const override;
