@@ -1,4 +1,4 @@
-﻿#include "LuaAnimInstance.h"
+#include "LuaAnimInstance.h"
 
 #include "Animation/AnimationManager.h"
 #include "Animation/AnimSequence.h"
@@ -17,9 +17,6 @@
 #include "Serialization/Archive.h"
 
 #include <cstring>
-
-IMPLEMENT_CLASS(ULuaAnimInstance, UAnimInstance)
-
 ULuaAnimInstance::~ULuaAnimInstance()
 {
 	FLuaScriptManager::UnregisterAnimInstance(this);
@@ -344,19 +341,6 @@ std::string ULuaAnimInstance::Lua_GetCurrentState() const
 // ──────────────────────────────────────────────
 // Editor 통합
 // ──────────────────────────────────────────────
-void ULuaAnimInstance::GetEditableProperties(TArray<FPropertyDescriptor>& OutProps)
-{
-	Super::GetEditableProperties(OutProps);
-
-	FPropertyDescriptor ScriptProp;
-	ScriptProp.Name          = "Script File";
-	ScriptProp.Type          = EPropertyType::ObjectRef;
-	ScriptProp.Category      = "Animation|Lua";
-	ScriptProp.ValuePtr      = &ScriptFile;
-	ScriptProp.AssetTypeName = "LuaAnimScript";
-	OutProps.push_back(ScriptProp);
-}
-
 void ULuaAnimInstance::PostEditProperty(const char* PropertyName)
 {
 	Super::PostEditProperty(PropertyName);

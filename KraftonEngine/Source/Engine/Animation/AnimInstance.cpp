@@ -1,11 +1,8 @@
-﻿#include "AnimInstance.h"
+#include "AnimInstance.h"
 #include "AnimNotify.h"
 #include "AnimSequenceBase.h"
 #include "Component/SkeletalMeshComponent.h"
 #include "Mesh/SkeletalMesh.h"
-
-DEFINE_CLASS(UAnimInstance, UObject)
-
 void UAnimInstance::UpdateAnimation(float DeltaSeconds)
 {
 	// 자식이 시간 진행 + AddAnimNotifies 로 큐에 적재 → 베이스가 일괄 dispatch.

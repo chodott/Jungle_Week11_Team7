@@ -1,6 +1,7 @@
 #pragma once
 #include "AssetEditorWidget.h"
 #include "Editor/Viewport/MeshEditorViewportClient.h"
+#include "Engine/Asset/AssetRegistry.h"
 
 struct FSkeletalMesh;
 struct ImDrawList;
@@ -16,6 +17,12 @@ struct FAnimationTabState
 	int32          SelectedAnimIndex = -1;
 	float          AnimListWidth     = 200.0f;
 	float          AnimDetailsWidth  = 250.0f;
+
+	// ListAnimationsForSkeleton 결과 캐시. 매 프레임 전체 anim 디스크 로드 방지.
+	// EditedObject(스켈레탈 메시) 가 바뀌거나 임포트 시에만 재계산한다.
+	TArray<FAssetListItem> CachedAnimFiles;
+	const void*            CachedAnimListKey = nullptr;
+	bool                   bAnimListDirty    = true;
 };
 
 class FMeshEditorWidget : public FAssetEditorWidget

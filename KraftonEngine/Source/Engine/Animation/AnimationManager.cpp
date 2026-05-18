@@ -289,6 +289,10 @@ UAnimSequence* FAnimationManager::LoadAnimation(const FString& PackagePath)
     if (!Reader.IsValid())
     {
         UE_LOG("Animation load failed: could not open file. Path=%s", NormalizedPath.c_str());
+        // 실패를 캐싱해 매 프레임 디스크 재접근/재파싱을 막는다.
+        // 재임포트 시 SaveAnimation 이 이 엔트리를 덮어쓰고,
+        // RefreshAvailableAnimations 가 nullptr 엔트리를 제거해 재시도를 허용한다.
+        AnimationCaches[NormalizedPath] = nullptr;
         return nullptr;
     }
 
@@ -298,6 +302,7 @@ UAnimSequence* FAnimationManager::LoadAnimation(const FString& PackagePath)
     if (!Header.IsValid(EAssetPackageType::AnimSequence))
     {
         UE_LOG("Animation load failed: invalid package header. Path=%s", NormalizedPath.c_str());
+        AnimationCaches[NormalizedPath] = nullptr;
         return nullptr;
     }
 
@@ -308,10 +313,13 @@ UAnimSequence* FAnimationManager::LoadAnimation(const FString& PackagePath)
     Sequence->Serialize(Reader);
     Sequence->SetAssetPathFileName(NormalizedPath);
 
-    if (!Reader.IsValid())
+    // 파일을 끝까지 정확히 읽으면 eofbit 때문에 IsValid()(=good())가 false가 되지만
+    // 그건 정상이다. 진짜 손상(못 엶/스트림 bad/EOF 넘어 읽음)만 거른다.
+    if (Reader.HadError())
     {
         UE_LOG("Animation load failed: corrupted package. Path=%s", NormalizedPath.c_str());
         UObjectManager::Get().DestroyObject(Sequence);
+        AnimationCaches[NormalizedPath] = nullptr;
         return nullptr;
     }
 
@@ -393,6 +401,27 @@ bool FAnimationManager::SaveAnimation(UAnimSequence* Sequence, const FString& Pa
     return true;
 }
 
+bool FAnimationManager::SaveAnimationPreservingMetadata(UAnimSequence* Sequence)
+{
+    if (!Sequence)
+    {
+        return false;
+    }
+
+    const FString& AssetPath = Sequence->GetAssetPathFileName();
+    if (AssetPath.empty() || AssetPath == "None")
+    {
+        UE_LOG("Animation save failed: asset path is unknown. Anim=%s", Sequence->GetName().c_str());
+        return false;
+    }
+
+    // 기존 메타데이터에서 SourcePath 추출 — 옵션 변경만으로 원본 reference 잃지 않도록.
+    FAssetImportMetadata ExistingMeta;
+    FAssetPackage::ReadMetadata(AssetPath, EAssetPackageType::AnimSequence, ExistingMeta);
+
+    return SaveAnimation(Sequence, AssetPath, ExistingMeta.SourcePath);
+}
+
 void FAnimationManager::RefreshAvailableAnimations()
 {
     const std::filesystem::path ContentRoot = std::filesystem::path(FPaths::RootDir()) / L"Content";
@@ -404,6 +433,14 @@ void FAnimationManager::RefreshAvailableAnimations()
     const std::filesystem::path ProjectRoot(FPaths::RootDir());
 
     AvailableAnimationFiles.clear();
+
+    // 디스크를 다시 스캔하므로 실패(negative) 캐시 엔트리는 폐기해 재시도를 허용한다.
+    // 성공적으로 로드된 시퀀스 포인터는 UI 등에서 참조 중일 수 있으므로 유지한다.
+    for (auto It = AnimationCaches.begin(); It != AnimationCaches.end(); )
+    {
+        if (It->second == nullptr) It = AnimationCaches.erase(It);
+        else ++It;
+    }
 
     for (const auto& Entry : std::filesystem::recursive_directory_iterator(ContentRoot))
     {

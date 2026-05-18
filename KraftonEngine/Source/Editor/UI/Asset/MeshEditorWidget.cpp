@@ -701,6 +701,7 @@ void FMeshEditorWidget::RenderAnimationLayout(float TotalHeight)
 			{
 				AnimTabState.CurrentSequence   = Seq;
 				AnimTabState.SelectedAnimIndex = -1;
+				AnimTabState.bAnimListDirty    = true;
 				ApplyAnimationToComponent();
 			}
 		}
@@ -723,6 +724,7 @@ void FMeshEditorWidget::RenderAnimationLayout(float TotalHeight)
 			FAnimationManager::Get().ImportAnimationForSkeleton(Request, &ImportedSequences);
 			// 임포트 성공/스킵(이미 존재) 무관하게 디스크를 다시 스캔해 목록 갱신.
 			FAnimationManager::Get().RefreshAvailableAnimations();
+			AnimTabState.bAnimListDirty = true;
 			if (!ImportedSequences.empty())
 			{
 				AnimTabState.CurrentSequence   = ImportedSequences[0];
@@ -734,7 +736,16 @@ void FMeshEditorWidget::RenderAnimationLayout(float TotalHeight)
 
 	ImGui::Separator();
 
-	const TArray<FAssetListItem> AnimFiles = FAssetRegistry::ListAnimationsForSkeleton(SkeletalMesh->GetSkeletonBinding(), false);
+	// ListAnimationsForSkeleton 은 모든 anim 을 풀 역직렬화하므로 매 프레임 호출 금지.
+	// 편집 대상이 바뀌거나 임포트로 dirty 표시될 때만 재계산한다.
+	if (AnimTabState.bAnimListDirty || AnimTabState.CachedAnimListKey != SkeletalMesh)
+	{
+		AnimTabState.CachedAnimFiles   = FAssetRegistry::ListAnimationsForSkeleton(SkeletalMesh->GetSkeletonBinding(), false);
+		AnimTabState.CachedAnimListKey = SkeletalMesh;
+		AnimTabState.bAnimListDirty    = false;
+	}
+
+	const TArray<FAssetListItem>& AnimFiles = AnimTabState.CachedAnimFiles;
 	for (int32 i = 0; i < static_cast<int32>(AnimFiles.size()); ++i)
 	{
 		const FAssetListItem& Item      = AnimFiles[i];
