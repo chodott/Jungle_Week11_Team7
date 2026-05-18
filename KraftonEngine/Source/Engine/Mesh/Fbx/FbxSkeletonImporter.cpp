@@ -63,6 +63,30 @@ namespace
 		return Node ? FFbxTransformUtils::ToEngineMatrix(Node->EvaluateGlobalTransform()) : FMatrix::Identity;
 	}
 
+	static FMatrix RemoveScalePreserveTranslation(const FMatrix& Matrix)
+	{
+		FMatrix Result = Matrix;
+
+		FVector XAxis(Result.M[0][0], Result.M[0][1], Result.M[0][2]);
+		FVector YAxis(Result.M[1][0], Result.M[1][1], Result.M[1][2]);
+		FVector ZAxis(Result.M[2][0], Result.M[2][1], Result.M[2][2]);
+
+		if (!XAxis.IsNearlyZero()) XAxis.Normalize();
+		if (!YAxis.IsNearlyZero()) YAxis.Normalize();
+		if (!ZAxis.IsNearlyZero()) ZAxis.Normalize();
+
+		Result.M[0][0] = XAxis.X;
+		Result.M[0][1] = XAxis.Y;
+		Result.M[0][2] = XAxis.Z;
+		Result.M[1][0] = YAxis.X;
+		Result.M[1][1] = YAxis.Y;
+		Result.M[1][2] = YAxis.Z;
+		Result.M[2][0] = ZAxis.X;
+		Result.M[2][1] = ZAxis.Y;
+		Result.M[2][2] = ZAxis.Z;
+		return Result;
+	}
+
 	static bool TryGetBindPoseGlobalMatrix(FbxScene* Scene, FbxNode* Node, FMatrix& OutGlobalMatrix)
 	{
 		return TryGetBindPoseMatrixForNode(Scene, Node, OutGlobalMatrix);
@@ -695,8 +719,8 @@ bool FFbxSkeletonImporter::ImportSkeleton(FbxScene* Scene, FFbxImportContext& Co
 	FMatrix                ReferenceMeshBind;
 	if (TryGetReferenceMeshBindMatrix(Scene, ReferenceLODNodes, ReferenceMeshBind))
 	{
-		Context.ReferenceMeshBind        = ReferenceMeshBind;
-		Context.ReferenceMeshBindInverse = ReferenceMeshBind.GetInverse();
+		Context.ReferenceMeshBind        = RemoveScalePreserveTranslation(ReferenceMeshBind);
+		Context.ReferenceMeshBindInverse = Context.ReferenceMeshBind.GetInverse();
 		Context.bHasReferenceMeshBind    = true;
 	}
 	else
