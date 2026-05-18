@@ -10,4 +10,7 @@ class FFbxSkeletonImporter
 public:
 	static bool ImportSkeleton(FbxScene* Scene, FFbxImportContext& Context, FString* OutMessage = nullptr);
 	static int32 FindNearestParentBoneIndex(FbxNode* Node, const TMap<FbxNode*, int32>& NodeToIndex);
+
+	static bool TryGetFirstMeshBindMatrix(FbxScene* Scene, FbxNode* MeshNode, FMatrix& OutMeshBindMatrix);
+	static bool TryGetReferenceMeshBindMatrix(FbxScene* Scene, const TArray<FbxNode*>& SkinnedMeshNodes, FMatrix& OutReferenceMeshBindMatrix);
 };

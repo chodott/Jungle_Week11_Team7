@@ -1,4 +1,4 @@
-﻿#include "FbxImporter.h"
+#include "FbxImporter.h"
 #include "Mesh/Fbx/FbxImportContext.h"
 #include "Mesh/Fbx/FbxSceneLoader.h"
 #include "Mesh/Fbx/FbxSceneQuery.h"
@@ -19,11 +19,15 @@ bool FFbxImporter::ImportStaticMesh(const FString& FilePath, const FImportOption
 		return false;
 	}
 
+	const FbxAxisSystem SourceAxisSystem = SceneHandle.Scene->GetGlobalSettings().GetAxisSystem();
+
 	FFbxSceneLoader::NormalizeScene(SceneHandle.Scene);
 	FFbxSceneLoader::Triangulate(SceneHandle.Manager, SceneHandle.Scene);
 
 	FFbxImportContext Context;
-	Context.SourcePath = FilePath;
+	Context.SourcePath            = FilePath;
+	Context.bHasSourceCoordSystem = true;
+	Context.SourceCoordSystem     = SourceAxisSystem.GetCoorSystem();
 	return FFbxStaticMeshImporter::Import(SceneHandle.Scene, FilePath, Options, Context, OutResult, OutMessage);
 }
 
@@ -37,11 +41,15 @@ bool FFbxImporter::ImportSkeletalMesh(const FString& FilePath, FFbxSkeletalMeshI
 		return false;
 	}
 
+	const FbxAxisSystem SourceAxisSystem = SceneHandle.Scene->GetGlobalSettings().GetAxisSystem();
+
 	FFbxSceneLoader::NormalizeScene(SceneHandle.Scene);
 	FFbxSceneLoader::Triangulate(SceneHandle.Manager, SceneHandle.Scene);
 
 	FFbxImportContext Context;
-	Context.SourcePath = FilePath;
+	Context.SourcePath            = FilePath;
+	Context.bHasSourceCoordSystem = true;
+	Context.SourceCoordSystem     = SourceAxisSystem.GetCoorSystem();
 	return FFbxSkeletalMeshImporter::Import(SceneHandle.Scene, Context, OutResult, OutMessage);
 }
 
@@ -55,11 +63,15 @@ bool FFbxImporter::ImportSkeletalMeshOnly(const FString& FilePath, FFbxSkeletalM
 		return false;
 	}
 
+	const FbxAxisSystem SourceAxisSystem = SceneHandle.Scene->GetGlobalSettings().GetAxisSystem();
+
 	FFbxSceneLoader::NormalizeScene(SceneHandle.Scene);
 	FFbxSceneLoader::Triangulate(SceneHandle.Manager, SceneHandle.Scene);
 
 	FFbxImportContext Context;
-	Context.SourcePath = FilePath;
+	Context.SourcePath            = FilePath;
+	Context.bHasSourceCoordSystem = true;
+	Context.SourceCoordSystem     = SourceAxisSystem.GetCoorSystem();
 	return FFbxSkeletalMeshImporter::ImportMeshOnly(SceneHandle.Scene, Context, OutResult, OutMessage);
 }
 
@@ -73,6 +85,8 @@ bool FFbxImporter::ImportAnimationOnly(const FString& FilePath, FFbxAnimationImp
 		return false;
 	}
 
+	const FbxAxisSystem SourceAxisSystem = SceneHandle.Scene->GetGlobalSettings().GetAxisSystem();
+
 	FFbxSceneLoader::NormalizeScene(SceneHandle.Scene);
 
 	FbxNode* RootNode = SceneHandle.Scene ? SceneHandle.Scene->GetRootNode() : nullptr;
@@ -83,7 +97,9 @@ bool FFbxImporter::ImportAnimationOnly(const FString& FilePath, FFbxAnimationImp
 	}
 
 	FFbxImportContext Context;
-	Context.SourcePath = FilePath;
+	Context.SourcePath            = FilePath;
+	Context.bHasSourceCoordSystem = true;
+	Context.SourceCoordSystem     = SourceAxisSystem.GetCoorSystem();
 	FFbxSceneQuery::CollectAllNodes(RootNode, Context.AllNodes);
 	FFbxSceneQuery::CollectMeshNodes(RootNode, Context.MeshNodes);
 

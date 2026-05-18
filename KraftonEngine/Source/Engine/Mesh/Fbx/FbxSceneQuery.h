@@ -19,6 +19,12 @@ public:
 	static bool    IsSceneRootNode(FbxNode* Node);
 	static FString ReadStringProperty(FbxNode* Node, const char* PropertyName);
 
+	static void CollectSkinClusterLinksFromMesh(FbxMesh* Mesh, TArray<FbxNode*>& OutClusterNodes);
+	static FbxNode* FindNearestParentSkeletonNode(FbxNode* MeshNode);
+	static void AddNodeAndParentsUntilSceneRoot(FbxNode* Node, TArray<FbxNode*>& OutNodes);
+	static void FindImportedBoneRoot(const TArray<FbxNode*>& Nodes, TArray<FbxNode*>& OutRoots);
+	static void CollectFullSkeletonHierarchyFromRoots(const TArray<FbxNode*>& RootNodes, const TArray<FbxNode*>& SeedNodes, TArray<FbxNode*>& OutBoneNodes);
+
 	static int32 ParseLODIndexFromName(const FString& Name);
 	static int32 GetMeshLODIndex(FbxNode* MeshNode);
 	static bool  TryGetFloatProperty(FbxNode* Node, const char* PropertyName, float& OutValue);

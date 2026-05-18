@@ -2,6 +2,8 @@
 #include "Platform/Paths.h"
 #include "Core/Log.h"
 
+#include <cmath>
+
 FFbxSceneHandle::~FFbxSceneHandle()
 {
 	if (Manager)
@@ -77,14 +79,23 @@ void FFbxSceneLoader::NormalizeScene(FbxScene* Scene)
 		return;
 	}
 
-	FbxSystemUnit::m.ConvertScene(Scene);
-
-	FbxAxisSystem UnrealAxisSystem(
+	FbxAxisSystem EngineAxisSystem(
 		FbxAxisSystem::eZAxis,
-		FbxAxisSystem::eParityEven,
+		FbxAxisSystem::eParityOdd,
 		FbxAxisSystem::eLeftHanded
 	);
-	UnrealAxisSystem.DeepConvertScene(Scene);
+
+	const FbxAxisSystem SceneAxisSystem = Scene->GetGlobalSettings().GetAxisSystem();
+	if (SceneAxisSystem != EngineAxisSystem)
+	{
+		EngineAxisSystem.ConvertScene(Scene);
+	}
+
+	const FbxSystemUnit EngineUnit = FbxSystemUnit::cm;
+	if (std::abs(Scene->GetGlobalSettings().GetSystemUnit().GetScaleFactor() - EngineUnit.GetScaleFactor()) > 1.0e-6)
+	{
+		EngineUnit.ConvertScene(Scene);
+	}
 }
 
 void FFbxSceneLoader::Triangulate(FbxManager* Manager, FbxScene* Scene)

@@ -637,7 +637,6 @@ void USkinnedMeshComponent::UpdateCPUSkinning()
 		if (!InOutVertex.Normal.IsNearlyZero()) InOutVertex.Normal.Normalize();
 	};
 
-	// FBX import 결과가 mesh range별 bind global을 가질 수 있어 range 단위 skinning을 유지한다.
 	auto SkinVertexRange = [&](uint32 VertexStart, uint32 VertexEnd, const FMatrix& MeshBindGlobal)
 		{
 			TArray<FMatrix> SkinMatrices;
@@ -648,8 +647,8 @@ void USkinnedMeshComponent::UpdateCPUSkinning()
 			{
 				if (BoneIndex < static_cast<int32>(BoneGlobals.size()))
 				{
-					SkinMatrices[BoneIndex] =
-						MeshBindGlobal * Asset->Bones[BoneIndex].InverseBindPoseMatrix * BoneGlobals[BoneIndex];
+					(void)MeshBindGlobal;
+					SkinMatrices[BoneIndex] = Asset->Bones[BoneIndex].InverseBindPoseMatrix * BoneGlobals[BoneIndex];
 				}
 			}
 
@@ -685,9 +684,9 @@ void USkinnedMeshComponent::UpdateCPUSkinning()
 				if (AccumWeight <= 0.0f)
 				{
 					// weight가 없는 vertex도 사라지지 않게 mesh bind transform만 적용한다.
-					SkinnedPos = MeshBindGlobal.TransformPositionWithW(Src.Position);
-					SkinnedNormal = MeshBindGlobal.TransformVector(Src.Normal);
-					SkinnedTangent = MeshBindGlobal.TransformVector(FVector(Src.Tangent.X, Src.Tangent.Y, Src.Tangent.Z));
+					SkinnedPos     = Src.Position;
+					SkinnedNormal  = Src.Normal;
+					SkinnedTangent = FVector(Src.Tangent.X, Src.Tangent.Y, Src.Tangent.Z);
 					if (!SkinnedNormal.IsNearlyZero())
 					{
 						SkinnedNormal.Normalize();

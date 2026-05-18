@@ -45,6 +45,53 @@ namespace
 		const FbxNodeAttribute::EType Type = Attribute->GetAttributeType();
 		return Type == FbxNodeAttribute::eNull || Type == FbxNodeAttribute::eMarker;
 	}
+
+	static bool HasSkeletonDescendant(FbxNode* Node)
+	{
+		if (!Node)
+		{
+			return false;
+		}
+
+		for (int32 ChildIndex = 0; ChildIndex < Node->GetChildCount(); ++ChildIndex)
+		{
+			FbxNode* Child = Node->GetChild(ChildIndex);
+			if (FFbxSceneQuery::IsSkeletonNode(Child) || HasSkeletonDescendant(Child))
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	static void CollectFullSkeletonHierarchyRecursive(
+		FbxNode*                Node,
+		const TArray<FbxNode*>& SeedNodes,
+		TArray<FbxNode*>&       OutBoneNodes
+		)
+	{
+		if (!Node || FFbxSceneQuery::IsSceneRootNode(Node))
+		{
+			return;
+		}
+
+		const bool bSeedNode      = FFbxSceneQuery::ContainsNode(SeedNodes, Node);
+		const bool bSkeletonNode  = FFbxSceneQuery::IsSkeletonNode(Node);
+		const bool bKeepContainer = bSeedNode || bSkeletonNode || HasSkeletonDescendant(Node);
+
+		if (!bKeepContainer)
+		{
+			return;
+		}
+
+		FFbxSceneQuery::AddUniqueNode(OutBoneNodes, Node);
+
+		for (int32 ChildIndex = 0; ChildIndex < Node->GetChildCount(); ++ChildIndex)
+		{
+			CollectFullSkeletonHierarchyRecursive(Node->GetChild(ChildIndex), SeedNodes, OutBoneNodes);
+		}
+	}
 }
 
 void FFbxSceneQuery::CollectAllNodes(FbxNode* RootNode, TArray<FbxNode*>& OutNodes)
@@ -145,6 +192,89 @@ void FFbxSceneQuery::AddUniqueNode(TArray<FbxNode*>& Nodes, FbxNode* Node)
 bool FFbxSceneQuery::IsSceneRootNode(FbxNode* Node)
 {
 	return Node && Node->GetParent() == nullptr;
+}
+
+void FFbxSceneQuery::CollectSkinClusterLinksFromMesh(FbxMesh* Mesh, TArray<FbxNode*>& OutClusterNodes)
+{
+	if (!Mesh)
+	{
+		return;
+	}
+
+	const int32 SkinCount = Mesh->GetDeformerCount(FbxDeformer::eSkin);
+	for (int32 SkinIndex = 0; SkinIndex < SkinCount; ++SkinIndex)
+	{
+		FbxSkin* Skin = static_cast<FbxSkin*>(Mesh->GetDeformer(SkinIndex, FbxDeformer::eSkin));
+		if (!Skin)
+		{
+			continue;
+		}
+
+		const int32 ClusterCount = Skin->GetClusterCount();
+		for (int32 ClusterIndex = 0; ClusterIndex < ClusterCount; ++ClusterIndex)
+		{
+			FbxCluster* Cluster = Skin->GetCluster(ClusterIndex);
+			if (Cluster && Cluster->GetLink())
+			{
+				AddUniqueNode(OutClusterNodes, Cluster->GetLink());
+			}
+		}
+	}
+}
+
+FbxNode* FFbxSceneQuery::FindNearestParentSkeletonNode(FbxNode* MeshNode)
+{
+	FbxNode* Current = MeshNode ? MeshNode->GetParent() : nullptr;
+	while (Current && !IsSceneRootNode(Current))
+	{
+		if (IsSkeletonNode(Current))
+		{
+			return Current;
+		}
+		Current = Current->GetParent();
+	}
+	return nullptr;
+}
+
+void FFbxSceneQuery::AddNodeAndParentsUntilSceneRoot(FbxNode* Node, TArray<FbxNode*>& OutNodes)
+{
+	FbxNode* Current = Node;
+	while (Current && !IsSceneRootNode(Current))
+	{
+		AddUniqueNode(OutNodes, Current);
+		Current = Current->GetParent();
+	}
+}
+
+void FFbxSceneQuery::FindImportedBoneRoot(const TArray<FbxNode*>& Nodes, TArray<FbxNode*>& OutRoots)
+{
+	OutRoots.clear();
+	for (FbxNode* Node : Nodes)
+	{
+		if (!Node)
+		{
+			continue;
+		}
+
+		FbxNode* Parent = Node->GetParent();
+		if (!Parent || !ContainsNode(Nodes, Parent))
+		{
+			AddUniqueNode(OutRoots, Node);
+		}
+	}
+}
+
+void FFbxSceneQuery::CollectFullSkeletonHierarchyFromRoots(
+	const TArray<FbxNode*>& RootNodes,
+	const TArray<FbxNode*>& SeedNodes,
+	TArray<FbxNode*>&       OutBoneNodes
+	)
+{
+	OutBoneNodes.clear();
+	for (FbxNode* RootNode : RootNodes)
+	{
+		CollectFullSkeletonHierarchyRecursive(RootNode, SeedNodes, OutBoneNodes);
+	}
 }
 
 FString FFbxSceneQuery::ReadStringProperty(FbxNode* Node, const char* PropertyName)

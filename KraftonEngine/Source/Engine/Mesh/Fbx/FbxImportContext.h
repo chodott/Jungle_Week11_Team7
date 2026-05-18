@@ -11,6 +11,9 @@ struct FFbxImportContext
 	FString                SourcePath;
 	FSkeletalImportSummary Summary;
 
+	bool                        bHasSourceCoordSystem = false;
+	FbxAxisSystem::ECoordSystem SourceCoordSystem     = FbxAxisSystem::eRightHanded;
+
 	TArray<FbxNode*> AllNodes;
 	TArray<FbxNode*> MeshNodes;
 
@@ -20,6 +23,10 @@ struct FFbxImportContext
 	TArray<FBone> Bones;
 	TMap<FbxNode*, int32> BoneNodeToIndex;
 	FReferenceSkeleton ReferenceSkeleton;
+
+	FMatrix ReferenceMeshBind        = FMatrix::Identity;
+	FMatrix ReferenceMeshBindInverse = FMatrix::Identity;
+	bool    bHasReferenceMeshBind    = false;
 
 	TArray<FVertexPNCTBW> SkeletalVertices;
 	TArray<uint32> SkeletalIndices;

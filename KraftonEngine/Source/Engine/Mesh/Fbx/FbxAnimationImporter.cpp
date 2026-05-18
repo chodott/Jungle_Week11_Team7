@@ -1176,27 +1176,26 @@ bool FFbxAnimationImporter::ImportAnimations(FbxScene* Scene, FFbxImportContext&
 			FbxTime Time;
 			Time.SetSecondDouble(StartSeconds + LocalSeconds);
 
-			// 기본값은 미리 계산한 bind/local pose다. FBX node가 있는 bone은 아래에서 curve 평가값으로 덮어쓴다.
 			BoneLocalTransforms = BindLocalTransforms;
+
+			TArray<FMatrix> BoneGlobalMatrices;
+			BoneGlobalMatrices.resize(Context.Bones.size(), FMatrix::Identity);
+			for (int32 BindBoneIndex = 0; BindBoneIndex < static_cast<int32>(Context.Bones.size()); ++BindBoneIndex)
+			{
+				BoneGlobalMatrices[BindBoneIndex] = Context.Bones[BindBoneIndex].GlobalMatrix;
+			}
 
 			for (const auto& Pair : Context.BoneNodeToIndex)
 			{
 				FbxNode*    BoneNode  = Pair.first;
 				const int32 BoneIndex = Pair.second;
 
-				if (!BoneNode)
+				if (!BoneNode || BoneIndex < 0 || BoneIndex >= static_cast<int32>(Context.Bones.size()))
 				{
 					continue;
 				}
 
-				if (BoneIndex < 0 || BoneIndex >= static_cast<int32>(Context.Bones.size()))
-				{
-					continue;
-				}
-
-				// 직접 multi-layer candidate를 만들고, policy에 따라 direct / SDK fallback / SDK only 중 하나를 최종 bake 값으로 사용한다.
 				const FFbxBakeMatrixResult BakeResult = EvaluateLocalFbxMatrixForBake(BoneNode, AnimStack, AnimLayer, Time, AnimLayerCount);
-
 				BakeStats.TestedSamples++;
 				BakeStats.MaxError = std::max(BakeStats.MaxError, BakeResult.Error);
 				if (BakeResult.bUsedSdkFallback)
@@ -1220,7 +1219,20 @@ bool FFbxAnimationImporter::ImportAnimations(FbxScene* Scene, FFbxImportContext&
 					}
 				}
 
-				BoneLocalTransforms[BoneIndex] = FAnimationRuntime::DecomposeMatrix(FFbxTransformUtils::ToEngineMatrix(BakeResult.FinalMatrix));
+				BoneGlobalMatrices[BoneIndex] = FFbxTransformUtils::ToEngineMatrix(
+					BoneNode->EvaluateGlobalTransform(Time)
+				) * Context.ReferenceMeshBindInverse;
+			}
+
+			for (int32 BoneIndex = 0; BoneIndex < static_cast<int32>(Context.Bones.size()); ++BoneIndex)
+			{
+				const int32 ParentIndex = Context.Bones[BoneIndex].ParentIndex;
+				FMatrix     LocalMatrix = BoneGlobalMatrices[BoneIndex];
+				if (ParentIndex >= 0 && ParentIndex < static_cast<int32>(Context.Bones.size()))
+				{
+					LocalMatrix = BoneGlobalMatrices[BoneIndex] * BoneGlobalMatrices[ParentIndex].GetInverse();
+				}
+				BoneLocalTransforms[BoneIndex] = FAnimationRuntime::DecomposeMatrix(LocalMatrix);
 			}
 
 			for (int32 BoneIndex = 0; BoneIndex < static_cast<int32>(Context.Bones.size()); ++BoneIndex)

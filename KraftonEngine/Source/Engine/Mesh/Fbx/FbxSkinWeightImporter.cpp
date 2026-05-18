@@ -54,23 +54,77 @@ namespace
 		return SlotNames;
 	}
 
+	static bool IsExplicitIgnoredNode(FbxNode* Node)
+	{
+		return FFbxSceneQuery::ReadStringProperty(Node, "ImportKind") == "Ignore";
+	}
+
+	static bool IsKeepAsAttachedStaticChild(FbxNode* Node)
+	{
+		const FString ImportKind = FFbxSceneQuery::ReadStringProperty(Node, "ImportKind");
+		return ImportKind == "Attachment" || ImportKind == "KeepAsAttachedStaticMesh";
+	}
+
+	static FMatrix ComputeMeshLocalMatrixToBone(FbxNode* MeshNode, FbxNode* BoneNode)
+	{
+		if (!MeshNode || !BoneNode)
+		{
+			return FMatrix::Identity;
+		}
+
+		const FMatrix MeshGlobalScene = FFbxTransformUtils::ToEngineMatrix(
+			FFbxTransformUtils::GetNodeGeometryTransform(MeshNode)
+		) * FFbxTransformUtils::ToEngineMatrix(MeshNode->EvaluateGlobalTransform());
+		const FMatrix BoneGlobalScene = FFbxTransformUtils::ToEngineMatrix(BoneNode->EvaluateGlobalTransform());
+		return MeshGlobalScene * BoneGlobalScene.GetInverse();
+	}
+
+	static bool ShouldImportAsBaseRenderMesh(FbxNode* MeshNode, FbxMesh* Mesh, const FFbxImportContext& Context)
+	{
+		if (!MeshNode || !Mesh || FFbxSceneQuery::IsCollisionProxyNode(MeshNode) || IsExplicitIgnoredNode(MeshNode))
+		{
+			return false;
+		}
+
+		if (FFbxSceneQuery::MeshHasSkin(Mesh))
+		{
+			return true;
+		}
+
+		if (IsKeepAsAttachedStaticChild(MeshNode))
+		{
+			return false;
+		}
+
+		FbxNode* ParentBoneNode  = nullptr;
+		int32    ParentBoneIndex = -1;
+		return FFbxSceneQuery::FindNearestParentBoneIndex(
+			MeshNode,
+			Context.BoneNodeToIndex,
+			ParentBoneNode,
+			ParentBoneIndex
+		) && ParentBoneIndex >= 0;
+	}
+
 	static FVertexPNCTBW MakeSkeletalVertex(
-		FbxMesh* Mesh,
-		int32 PolygonIndex,
-		int32 CornerIndex,
-		int32 PolygonVertexIndex,
-		const FFbxTriangleSample& Triangle,
-		const TArray<FWeightData>& Weights
+		FbxMesh*                   Mesh,
+		int32                      PolygonIndex,
+		int32                      CornerIndex,
+		int32                      PolygonVertexIndex,
+		const FFbxTriangleSample&  Triangle,
+		const FFbxMeshImportSpace& ImportSpace,
+		const TArray<FWeightData>& Weights,
+		bool                       bReverseWinding
 		)
 	{
 		FVertexPNCTBW Vertex;
-		const int32 ControlPointIndex = Triangle.ControlPointIndices[CornerIndex];
-		Vertex.Position = FFbxGeometryReader::ReadPosition(Mesh, ControlPointIndex);
+		const int32   ControlPointIndex = Triangle.ControlPointIndices[CornerIndex];
+		Vertex.Position                 = Triangle.Positions[CornerIndex];
 
 		FVector Normal;
 		if (FFbxGeometryReader::TryReadNormal(Mesh, PolygonIndex, CornerIndex, Normal))
 		{
-			Vertex.Normal = Normal;
+			Vertex.Normal = FFbxTransformUtils::TransformNormalByMatrix(Normal, ImportSpace.NormalTransform);
 		}
 		else
 		{
@@ -88,13 +142,18 @@ namespace
 		if (FFbxGeometryReader::TryReadTangent(Mesh, ControlPointIndex, PolygonVertexIndex, ImportedTangent))
 		{
 			FVector Tangent(ImportedTangent.X, ImportedTangent.Y, ImportedTangent.Z);
-			Tangent = FFbxTransformUtils::OrthogonalizeTangentToNormal(Tangent, Vertex.Normal);
-			Vertex.Tangent = FVector4(Tangent.X, Tangent.Y, Tangent.Z, ImportedTangent.W);
+			Tangent = FFbxTransformUtils::TransformTangentByMatrix(Tangent, ImportSpace.VertexTransform, Vertex.Normal);
+			Vertex.Tangent = FVector4(
+				Tangent.X,
+				Tangent.Y,
+				Tangent.Z,
+				bReverseWinding ? -ImportedTangent.W : ImportedTangent.W
+			);
 		}
 		else
 		{
 			FVector Tangent = FFbxTransformUtils::OrthogonalizeTangentToNormal(Triangle.FallbackTangent, Vertex.Normal);
-			Vertex.Tangent = FVector4(Tangent.X, Tangent.Y, Tangent.Z, 1.0f);
+			Vertex.Tangent  = FVector4(Tangent.X, Tangent.Y, Tangent.Z, bReverseWinding ? -1.0f : 1.0f);
 		}
 
 		for (int32 WeightIndex = 0; WeightIndex < static_cast<int32>(Weights.size()) && WeightIndex < 4; ++WeightIndex)
@@ -104,6 +163,24 @@ namespace
 		}
 		NormalizeWeights(Vertex.BoneWeights, 4);
 		return Vertex;
+	}
+
+	static void RebuildBoneLocalMatricesFromGlobalBindPose(FFbxImportContext& Context)
+	{
+		for (int32 BoneIndex = 0; BoneIndex < static_cast<int32>(Context.Bones.size()); ++BoneIndex)
+		{
+			FBone& Bone = Context.Bones[BoneIndex];
+
+			if (Bone.ParentIndex >= 0 && Bone.ParentIndex < static_cast<int32>(Context.Bones.size()))
+			{
+				const FMatrix ParentGlobalInverse = Context.Bones[Bone.ParentIndex].GlobalMatrix.GetInverse();
+				Bone.LocalMatrix                  = Bone.GlobalMatrix * ParentGlobalInverse;
+			}
+			else
+			{
+				Bone.LocalMatrix = Bone.GlobalMatrix;
+			}
+		}
 	}
 }
 
@@ -123,20 +200,17 @@ bool FFbxSkinWeightImporter::ImportSkin(FbxScene* Scene, FFbxImportContext& Cont
 	int32            BaseLODIndex = std::numeric_limits<int32>::max();
 	for (FbxNode* MeshNode : Context.MeshNodes)
 	{
-		if (!MeshNode || FFbxSceneQuery::IsCollisionProxyNode(MeshNode))
+		FbxMesh* CandidateMesh = MeshNode ? MeshNode->GetMesh() : nullptr;
+		if (!ShouldImportAsBaseRenderMesh(MeshNode, CandidateMesh, Context))
 		{
-			continue;
-		}
-
-		FbxMesh* CandidateMesh = MeshNode->GetMesh();
-		if (CandidateMesh && !FFbxSceneQuery::MeshHasSkin(CandidateMesh))
-		{
-			FbxNode* ParentBoneNode = nullptr;
-			int32 ParentBoneIndex = -1;
-			if (!FFbxSceneQuery::FindNearestParentBoneIndex(MeshNode, Context.BoneNodeToIndex, ParentBoneNode, ParentBoneIndex))
+			if (MeshNode && FFbxSceneQuery::IsCollisionProxyNode(MeshNode))
 			{
-				continue;
+				Context.AddWarningOnce(
+					ESkeletalImportWarningType::CollisionProxySkippedFromRenderLOD,
+					"Collision proxy mesh was skipped from skeletal render geometry."
+				);
 			}
+			continue;
 		}
 
 		const int32 LODIndex = FFbxSceneQuery::GetMeshLODIndex(MeshNode);
@@ -159,7 +233,10 @@ bool FFbxSkinWeightImporter::ImportSkin(FbxScene* Scene, FFbxImportContext& Cont
 			continue;
 		}
 
-		if (FFbxSceneQuery::IsCollisionProxyNode(Node) || !FFbxSceneQuery::ContainsNode(BaseRenderMeshNodes, Node))
+		if (!ShouldImportAsBaseRenderMesh(Node, Mesh, Context) || !FFbxSceneQuery::ContainsNode(
+			BaseRenderMeshNodes,
+			Node
+		))
 		{
 			if (FFbxSceneQuery::IsCollisionProxyNode(Node))
 			{
@@ -172,12 +249,46 @@ bool FFbxSkinWeightImporter::ImportSkin(FbxScene* Scene, FFbxImportContext& Cont
 		FbxSkin* Skin = DeformerCount > 0 ? static_cast<FbxSkin*>(Mesh->GetDeformer(0, FbxDeformer::eSkin)) : nullptr;
 		const int32 ClusterCount = Skin ? Skin->GetClusterCount() : 0;
 		const bool bHasSkin = Skin && ClusterCount > 0;
-		const int32 RigidBoneIndex = bHasSkin ? -1 : FFbxSkeletonImporter::FindNearestParentBoneIndex(Node, Context.BoneNodeToIndex);
+		FbxNode* RigidParentBoneNode = nullptr;
+		int32 RigidBoneIndex = -1;
+		if (!bHasSkin)
+		{
+			FFbxSceneQuery::FindNearestParentBoneIndex(
+				Node,
+				Context.BoneNodeToIndex,
+				RigidParentBoneNode,
+				RigidBoneIndex
+			);
+		}
 
 		TArray<TArray<FWeightData>> TempWeights(Mesh->GetControlPointsCount());
-		FbxAMatrix NodeGeometryTransform = FFbxTransformUtils::GetGeometryTransform(Node);
-		FMatrix MeshBindGlobal = FFbxTransformUtils::ToEngineMatrix(Node->EvaluateGlobalTransform() * NodeGeometryTransform);
-		bool bHasClusterMeshBindGlobal = false;
+
+		FMatrix MeshToReference = FMatrix::Identity;
+		if (bHasSkin)
+		{
+			FMatrix MeshBindGlobal = FMatrix::Identity;
+			if (!FFbxSkeletonImporter::TryGetFirstMeshBindMatrix(Scene, Node, MeshBindGlobal))
+			{
+				continue;
+			}
+			MeshToReference = MeshBindGlobal * Context.ReferenceMeshBindInverse;
+		}
+		else
+		{
+			if (!RigidParentBoneNode || RigidBoneIndex < 0 || RigidBoneIndex >= static_cast<int32>(Context.Bones.
+				size()))
+			{
+				continue;
+			}
+
+			MeshToReference = ComputeMeshLocalMatrixToBone(Node, RigidParentBoneNode) * Context.Bones[RigidBoneIndex].
+			GlobalMatrix;
+		}
+
+		FFbxMeshImportSpace ImportSpace;
+		ImportSpace.VertexTransform = MeshToReference;
+		ImportSpace.NormalTransform = MeshToReference.GetInverse().GetTransposed();
+		const bool bReverseWinding  = FFbxTransformUtils::Determinant3x3(MeshToReference) < 0.0f;
 
 		for (int32 ClusterIndex = 0; ClusterIndex < ClusterCount; ++ClusterIndex)
 		{
@@ -193,18 +304,7 @@ bool FFbxSkinWeightImporter::ImportSkin(FbxScene* Scene, FFbxImportContext& Cont
 				continue;
 			}
 
-			FbxAMatrix LinkBindMatrix;
-			Cluster->GetTransformLinkMatrix(LinkBindMatrix);
 			const int32 BoneIndex = BoneIt->second;
-			Context.Bones[BoneIndex].InverseBindPoseMatrix = FFbxTransformUtils::ToEngineMatrix(LinkBindMatrix).GetInverse();
-
-			if (!bHasClusterMeshBindGlobal)
-			{
-				FbxAMatrix MeshBindMatrix;
-				Cluster->GetTransformMatrix(MeshBindMatrix);
-				MeshBindGlobal = FFbxTransformUtils::ToEngineMatrix(MeshBindMatrix);
-				bHasClusterMeshBindGlobal = true;
-			}
 
 			int32* ControlPointIndices = Cluster->GetControlPointIndices();
 			double* ControlPointWeights = Cluster->GetControlPointWeights();
@@ -274,10 +374,14 @@ bool FFbxSkinWeightImporter::ImportSkin(FbxScene* Scene, FFbxImportContext& Cont
 			}
 
 			FFbxTriangleSample Triangle;
-			if (!FFbxGeometryReader::ReadTriangleSample(Mesh, PolygonIndex, FFbxMeshImportSpace::IdentitySpace(), Triangle))
+			if (!FFbxGeometryReader::ReadTriangleSample(Mesh, PolygonIndex, ImportSpace, Triangle))
 			{
 				PolygonVertexIndex += PolygonSize;
 				continue;
+			}
+			if (bReverseWinding)
+			{
+				Triangle.FallbackNormal *= -1.0f;
 			}
 
 			const int32 MaterialIndex = ResolveGlobalMaterialIndex(Node, Mesh, PolygonIndex, Context);
@@ -302,25 +406,34 @@ bool FFbxSkinWeightImporter::ImportSkin(FbxScene* Scene, FFbxImportContext& Cont
 				}
 
 				const TArray<FWeightData>& Weights = TempWeights[ControlPointIndex];
-				FVertexPNCTBW Vertex = MakeSkeletalVertex(Mesh, PolygonIndex, CornerIndex, CurrentPolygonVertexIndex, Triangle, Weights);
+				FVertexPNCTBW              Vertex  = MakeSkeletalVertex(
+					Mesh,
+					PolygonIndex,
+					CornerIndex,
+					CurrentPolygonVertexIndex,
+					Triangle,
+					ImportSpace,
+					Weights,
+					bReverseWinding
+				);
 				bool bAddedNewVertex = false;
 				const uint32 VertexIndex = Deduplicator.FindOrAdd(Vertex, Mesh, ControlPointIndex, MaterialIndex, Context.SkeletalVertices, bAddedNewVertex);
 				TriIndices[CornerIndex] = VertexIndex;
 
-				if (!Context.MorphSourcesByLOD.empty())
+				if (!Context.MorphSourcesByLOD.empty() && bAddedNewVertex)
 				{
 					FFbxImportedMorphSourceVertex MorphSource;
-					MorphSource.MeshNode = Node;
-					MorphSource.Mesh = Mesh;
-					MorphSource.SourceMeshNodeName = Node && Node->GetName() ? FString(Node->GetName()) : FString();
-					MorphSource.ControlPointIndex = ControlPointIndex;
-					MorphSource.PolygonIndex = PolygonIndex;
-					MorphSource.CornerIndex = CornerIndex;
-					MorphSource.PolygonVertexIndex = CurrentPolygonVertexIndex;
-					MorphSource.VertexIndex = VertexIndex;
-					MorphSource.MeshToReference = FMatrix::Identity;
-					MorphSource.NormalToReference = FMatrix::Identity;
-					MorphSource.BaseNormalInReference = Vertex.Normal;
+					MorphSource.MeshNode               = Node;
+					MorphSource.Mesh                   = Mesh;
+					MorphSource.SourceMeshNodeName     = Node && Node->GetName() ? FString(Node->GetName()) : FString();
+					MorphSource.ControlPointIndex      = ControlPointIndex;
+					MorphSource.PolygonIndex           = PolygonIndex;
+					MorphSource.CornerIndex            = CornerIndex;
+					MorphSource.PolygonVertexIndex     = CurrentPolygonVertexIndex;
+					MorphSource.VertexIndex            = VertexIndex;
+					MorphSource.MeshToReference        = MeshToReference;
+					MorphSource.NormalToReference      = ImportSpace.NormalTransform;
+					MorphSource.BaseNormalInReference  = Vertex.Normal;
 					MorphSource.BaseTangentInReference = Vertex.Tangent;
 					PendingMorphSources.push_back(MorphSource);
 				}
@@ -329,8 +442,8 @@ bool FFbxSkinWeightImporter::ImportSkin(FbxScene* Scene, FFbxImportContext& Cont
 			if (bValidTriangle)
 			{
 				Section->Indices.push_back(TriIndices[0]);
-				Section->Indices.push_back(TriIndices[1]);
-				Section->Indices.push_back(TriIndices[2]);
+				Section->Indices.push_back(bReverseWinding ? TriIndices[2] : TriIndices[1]);
+				Section->Indices.push_back(bReverseWinding ? TriIndices[1] : TriIndices[2]);
 				if (!Context.MorphSourcesByLOD.empty())
 				{
 					Context.MorphSourcesByLOD[0].insert(Context.MorphSourcesByLOD[0].end(), PendingMorphSources.begin(), PendingMorphSources.end());
@@ -367,16 +480,18 @@ bool FFbxSkinWeightImporter::ImportSkin(FbxScene* Scene, FFbxImportContext& Cont
 		}
 
 		FSkeletalMeshRange MeshRange;
-		MeshRange.VertexStart = VertexStart;
-		MeshRange.VertexEnd = static_cast<uint32>(Context.SkeletalVertices.size());
-		MeshRange.FirstIndex = FirstIndex;
-		MeshRange.IndexCount = static_cast<uint32>(Context.SkeletalIndices.size()) - FirstIndex;
-		MeshRange.MeshBindGlobal = MeshBindGlobal;
+		MeshRange.VertexStart    = VertexStart;
+		MeshRange.VertexEnd      = static_cast<uint32>(Context.SkeletalVertices.size());
+		MeshRange.FirstIndex     = FirstIndex;
+		MeshRange.IndexCount     = static_cast<uint32>(Context.SkeletalIndices.size()) - FirstIndex;
+		MeshRange.MeshBindGlobal = FMatrix::Identity;
 		if (MeshRange.VertexStart < MeshRange.VertexEnd && MeshRange.IndexCount > 0)
 		{
 			Context.SkeletalMeshRanges.push_back(MeshRange);
 		}
 	}
+
+	RebuildBoneLocalMatricesFromGlobalBindPose(Context);
 
 	const bool bImportedAnyGeometry = !Context.SkeletalVertices.empty() && !Context.SkeletalIndices.empty();
 	if (!bImportedAnyGeometry && OutMessage)

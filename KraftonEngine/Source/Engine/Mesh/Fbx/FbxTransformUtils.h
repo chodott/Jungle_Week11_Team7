@@ -2,6 +2,7 @@
 
 #include "Core/CoreTypes.h"
 #include "Math/Matrix.h"
+#include "Math/Quat.h"
 
 #include <fbxsdk.h>
 
@@ -23,5 +24,10 @@ public:
 	static FVector OrthogonalizeTangentToNormal(const FVector& Tangent, const FVector& Normal);
 	static FVector TransformTangentByMatrix(const FVector& Tangent, const FMatrix& TangentMatrix, const FVector& ReferenceNormal);
 	static FVector TransformVectorNoNormalizeByMatrix(const FVector& V, const FMatrix& M);
-	static float   Determinant3x3(const FMatrix& Matrix); 
+	static float   Determinant3x3(const FMatrix& Matrix);
+
+	static FMatrix RemoveTranslationFromMatrix(const FMatrix& Matrix);
+	static FMatrix RemoveScaleFromMatrix(const FMatrix& Matrix);
+	static void    DecomposeMatrixPreserveMirror(const FMatrix& Matrix, FVector& OutTranslation, FQuat& OutRotation, FVector& OutScale);
+	static FMatrix MakeAxisSystemToEngineAssetMatrix(const FbxAxisSystem& AxisSystem, bool bMirrorHandedness);
 };

@@ -80,6 +80,7 @@ void USkeletalMesh::InitResources(ID3D11Device* InDevice)
 	TMeshData<FVertexPNCTBW> RenderMeshData;
 	RenderMeshData.Vertices.reserve(SkeletalMeshAsset->Vertices.size());
 
+	const int32 BoneCount = static_cast<int32>(SkeletalMeshAsset->Bones.size());
 	for (const FVertexPNCTBW& RawVert : SkeletalMeshAsset->Vertices)
 	{
 		FVertexPNCTBW RenderVert;
@@ -88,8 +89,38 @@ void USkeletalMesh::InitResources(ID3D11Device* InDevice)
 		RenderVert.Color = RawVert.Color;
 		RenderVert.UV = RawVert.UV;
 		RenderVert.Tangent = RawVert.Tangent;
-		std::copy(std::begin(RawVert.BoneIndices), std::end(RawVert.BoneIndices), std::begin(RenderVert.BoneIndices));
-		std::copy(std::begin(RawVert.BoneWeights), std::end(RawVert.BoneWeights), std::begin(RenderVert.BoneWeights));
+
+		float TotalWeight = 0.0f;
+		for (int32 InfluenceIndex = 0; InfluenceIndex < 4; ++InfluenceIndex)
+		{
+			const int32 BoneIndex = RawVert.BoneIndices[InfluenceIndex];
+			const float Weight    = RawVert.BoneWeights[InfluenceIndex];
+			if (Weight <= 0.0f || BoneIndex < 0 || BoneIndex >= BoneCount)
+			{
+				RenderVert.BoneIndices[InfluenceIndex] = 0;
+				RenderVert.BoneWeights[InfluenceIndex] = 0.0f;
+				continue;
+			}
+
+			RenderVert.BoneIndices[InfluenceIndex] = BoneIndex;
+			RenderVert.BoneWeights[InfluenceIndex] = Weight;
+			TotalWeight                            += Weight;
+		}
+
+		if (TotalWeight <= 1.0e-6f && BoneCount > 0)
+		{
+			RenderVert.BoneIndices[0] = 0;
+			RenderVert.BoneWeights[0] = 1.0f;
+		}
+		else if (TotalWeight > 1.0e-6f)
+		{
+			const float InvTotalWeight = 1.0f / TotalWeight;
+			for (int32 InfluenceIndex = 0; InfluenceIndex < 4; ++InfluenceIndex)
+			{
+				RenderVert.BoneWeights[InfluenceIndex] *= InvTotalWeight;
+			}
+		}
+
 		RenderMeshData.Vertices.push_back(RenderVert);
 	}
 	RenderMeshData.Indices = SkeletalMeshAsset->Indices;

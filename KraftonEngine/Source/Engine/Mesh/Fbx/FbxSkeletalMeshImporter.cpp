@@ -1,4 +1,4 @@
-#include "Mesh/Fbx/FbxSkeletalMeshImporter.h"
+﻿#include "Mesh/Fbx/FbxSkeletalMeshImporter.h"
 #include "Mesh/Fbx/FbxSceneQuery.h"
 #include "Mesh/Fbx/FbxMaterialImporter.h"
 #include "Mesh/Fbx/FbxSkeletonImporter.h"
@@ -11,7 +11,13 @@
 #include "Mesh/Fbx/FbxSceneHierarchyImporter.h"
 #include "Mesh/Fbx/FbxSocketImporter.h"
 #include "Mesh/Fbx/FbxTransformUtils.h"
+#include "Animation/AnimationRuntime.h"
+#include "Animation/AnimDataModel.h"
+#include "Animation/AnimSequence.h"
+#include "Math/Transform.h"
 
+#include <algorithm>
+#include <cmath>
 #include <string>
 #include <utility>
 
@@ -20,11 +26,141 @@ namespace
 
 	static FMatrix GetReferenceMeshBindInverse(const FFbxImportContext& Context)
 	{
-		if (!Context.SkeletalMeshRanges.empty())
+		return Context.ReferenceMeshBindInverse;
+	}
+
+	enum class EFbxSkeletalImportMeshKind : uint8
+	{
+		Skinned,
+		StaticChildOfBone,
+		Loose,
+		CollisionProxy,
+		Ignored
+	};
+
+	struct FFbxSkeletalImportMeshNode
+	{
+		FbxNode*                         MeshNode = nullptr;
+		FString                          SourceNodeName;
+		EFbxSkeletalImportMeshKind       Kind                    = EFbxSkeletalImportMeshKind::Ignored;
+		FbxNode*                         ParentBoneNode          = nullptr;
+		int32                            ParentBoneIndex         = -1;
+		FMatrix                          LocalMatrixToParentBone = FMatrix::Identity;
+		ESkeletalStaticChildImportAction StaticChildAction       = ESkeletalStaticChildImportAction::MergeAsRigidPart;
+	};
+
+	static ESkeletalStaticChildImportAction ReadStaticChildAction(FbxNode* Node)
+	{
+		const FString ImportKind = FFbxSceneQuery::ReadStringProperty(Node, "ImportKind");
+		if (ImportKind == "Attachment" || ImportKind == "KeepAsAttachedStaticMesh")
 		{
-			return Context.SkeletalMeshRanges[0].MeshBindGlobal.GetInverse();
+			return ESkeletalStaticChildImportAction::KeepAsAttachedStaticMesh;
 		}
-		return FMatrix::Identity;
+		if (ImportKind == "Ignore")
+		{
+			return ESkeletalStaticChildImportAction::Ignore;
+		}
+		return ESkeletalStaticChildImportAction::MergeAsRigidPart;
+	}
+
+	static bool IsExplicitIgnoredNode(FbxNode* Node)
+	{
+		return FFbxSceneQuery::ReadStringProperty(Node, "ImportKind") == "Ignore";
+	}
+
+	static FMatrix ComputeMeshLocalMatrixToBone(FbxNode* MeshNode, FbxNode* BoneNode)
+	{
+		if (!MeshNode || !BoneNode)
+		{
+			return FMatrix::Identity;
+		}
+
+		const FMatrix MeshGlobalScene = FFbxTransformUtils::ToEngineMatrix(
+			FFbxTransformUtils::GetNodeGeometryTransform(MeshNode)
+		) * FFbxTransformUtils::ToEngineMatrix(MeshNode->EvaluateGlobalTransform());
+		const FMatrix BoneGlobalScene = FFbxTransformUtils::ToEngineMatrix(BoneNode->EvaluateGlobalTransform());
+		return MeshGlobalScene * BoneGlobalScene.GetInverse();
+	}
+
+	static void ClassifyMeshNodes(const FFbxImportContext& Context, TArray<FFbxSkeletalImportMeshNode>& OutImportNodes)
+	{
+		OutImportNodes.clear();
+		for (FbxNode* MeshNode : Context.MeshNodes)
+		{
+			FbxMesh* Mesh = MeshNode ? MeshNode->GetMesh() : nullptr;
+			if (!Mesh)
+			{
+				continue;
+			}
+
+			FFbxSkeletalImportMeshNode ImportNode;
+			ImportNode.MeshNode       = MeshNode;
+			ImportNode.SourceNodeName = MeshNode->GetName() ? FString(MeshNode->GetName()) : FString();
+
+			FbxNode*   ParentBoneNode  = nullptr;
+			int32      ParentBoneIndex = -1;
+			const bool bHasParentBone  = FFbxSceneQuery::FindNearestParentBoneIndex(
+				MeshNode,
+				Context.BoneNodeToIndex,
+				ParentBoneNode,
+				ParentBoneIndex
+			);
+
+			if (IsExplicitIgnoredNode(MeshNode))
+			{
+				ImportNode.Kind = EFbxSkeletalImportMeshKind::Ignored;
+				OutImportNodes.push_back(ImportNode);
+				continue;
+			}
+
+			if (FFbxSceneQuery::MeshHasSkin(Mesh))
+			{
+				ImportNode.Kind = EFbxSkeletalImportMeshKind::Skinned;
+				OutImportNodes.push_back(ImportNode);
+				continue;
+			}
+
+			if (FFbxSceneQuery::IsCollisionProxyNode(MeshNode))
+			{
+				ImportNode.Kind                    = EFbxSkeletalImportMeshKind::CollisionProxy;
+				ImportNode.ParentBoneIndex         = ParentBoneIndex;
+				ImportNode.ParentBoneNode          = ParentBoneNode;
+				ImportNode.LocalMatrixToParentBone = bHasParentBone
+				? ComputeMeshLocalMatrixToBone(MeshNode, ParentBoneNode) : FMatrix::Identity;
+				OutImportNodes.push_back(ImportNode);
+				continue;
+			}
+
+			if (bHasParentBone)
+			{
+				ImportNode.Kind                    = EFbxSkeletalImportMeshKind::StaticChildOfBone;
+				ImportNode.ParentBoneIndex         = ParentBoneIndex;
+				ImportNode.ParentBoneNode          = ParentBoneNode;
+				ImportNode.LocalMatrixToParentBone = ComputeMeshLocalMatrixToBone(MeshNode, ParentBoneNode);
+				ImportNode.StaticChildAction       = ReadStaticChildAction(MeshNode);
+				OutImportNodes.push_back(ImportNode);
+				continue;
+			}
+
+			ImportNode.Kind = EFbxSkeletalImportMeshKind::Loose;
+			OutImportNodes.push_back(ImportNode);
+		}
+	}
+
+	static void RebuildReferenceSkeletonFromBones(const TArray<FBone>& Bones, FReferenceSkeleton& OutReferenceSkeleton)
+	{
+		OutReferenceSkeleton.Bones.clear();
+		OutReferenceSkeleton.Bones.reserve(Bones.size());
+		for (const FBone& Bone : Bones)
+		{
+			FReferenceBone RefBone;
+			RefBone.Name            = Bone.Name;
+			RefBone.ParentIndex     = Bone.ParentIndex;
+			RefBone.LocalBindPose   = Bone.LocalMatrix;
+			RefBone.GlobalBindPose  = Bone.GlobalMatrix;
+			RefBone.InverseBindPose = Bone.InverseBindPoseMatrix;
+			OutReferenceSkeleton.Bones.push_back(RefBone);
+		}
 	}
 
 	static void ImportSkeletalCollisionShapes(
@@ -36,35 +172,34 @@ namespace
 		)
 	{
 		(void)Scene;
+		(void)ReferenceMeshBindInverse;
 		OutCollisionShapes.clear();
 
-		for (FbxNode* Node : Context.MeshNodes)
+		TArray<FFbxSkeletalImportMeshNode> ImportNodes;
+		ClassifyMeshNodes(Context, ImportNodes);
+
+		for (const FFbxSkeletalImportMeshNode& ImportNode : ImportNodes)
 		{
-			if (!Node || !FFbxSceneQuery::IsCollisionProxyNode(Node))
+			if (ImportNode.Kind != EFbxSkeletalImportMeshKind::CollisionProxy || !ImportNode.MeshNode)
 			{
 				continue;
 			}
 
-			FbxNode* ParentBoneNode = nullptr;
-			int32 ParentBoneIndex = -1;
-			const FMatrix GlobalReferenceMatrix = FFbxTransformUtils::ToEngineMatrix(Node->EvaluateGlobalTransform() * FFbxTransformUtils::GetGeometryTransform(Node)) * ReferenceMeshBindInverse;
-			FMatrix LocalMatrix = GlobalReferenceMatrix;
 			FString ParentBoneName;
-
-			if (FFbxSceneQuery::FindNearestParentBoneIndex(Node, Context.BoneNodeToIndex, ParentBoneNode, ParentBoneIndex)
-				&& ParentBoneIndex >= 0
-				&& ParentBoneIndex < static_cast<int32>(ReferenceSkeleton.Bones.size()))
+			if (ImportNode.ParentBoneIndex >= 0 && ImportNode.ParentBoneIndex < static_cast<int32>(ReferenceSkeleton.
+				Bones.size()))
 			{
-				ParentBoneName = ReferenceSkeleton.Bones[ParentBoneIndex].Name;
-				LocalMatrix = GlobalReferenceMatrix * ReferenceSkeleton.Bones[ParentBoneIndex].GlobalBindPose.GetInverse();
-			}
-			else
-			{
-				ParentBoneIndex = -1;
+				ParentBoneName = ReferenceSkeleton.Bones[ImportNode.ParentBoneIndex].Name;
 			}
 
 			FImportedCollisionShape Shape;
-			if (FFbxCollisionImporter::ImportCollisionShape(Node, LocalMatrix, ParentBoneIndex, ParentBoneName, Shape))
+			if (FFbxCollisionImporter::ImportCollisionShape(
+				ImportNode.MeshNode,
+				ImportNode.LocalMatrixToParentBone,
+				ImportNode.ParentBoneIndex,
+				ParentBoneName,
+				Shape
+			))
 			{
 				OutCollisionShapes.push_back(std::move(Shape));
 			}
@@ -80,42 +215,266 @@ namespace
 		TArray<FFbxSplitStaticMeshReference>& OutSplitStaticMeshes
 		)
 	{
+		(void)ReferenceMeshBindInverse;
 		OutStaticChildMeshes.clear();
 		OutSplitStaticMeshes.clear();
 
-		for (FbxNode* Node : Context.MeshNodes)
+		TArray<FFbxSkeletalImportMeshNode> ImportNodes;
+		ClassifyMeshNodes(Context, ImportNodes);
+
+		for (const FFbxSkeletalImportMeshNode& ImportNode : ImportNodes)
 		{
-			FbxMesh* Mesh = Node ? Node->GetMesh() : nullptr;
-			if (!Node || !Mesh || FFbxSceneQuery::IsCollisionProxyNode(Node) || FFbxSceneQuery::MeshHasSkin(Mesh))
+			if (!ImportNode.MeshNode)
 			{
 				continue;
 			}
 
-			const FMatrix GlobalMatrix = FFbxTransformUtils::ToEngineMatrix(Node->EvaluateGlobalTransform() * FFbxTransformUtils::GetGeometryTransform(Node));
-			const FMatrix GlobalReferenceMatrix = GlobalMatrix * ReferenceMeshBindInverse;
-			FbxNode* ParentBoneNode = nullptr;
-			int32 ParentBoneIndex = -1;
-			if (FFbxSceneQuery::FindNearestParentBoneIndex(Node, Context.BoneNodeToIndex, ParentBoneNode, ParentBoneIndex)
-				&& ParentBoneIndex >= 0
-				&& ParentBoneIndex < static_cast<int32>(ReferenceSkeleton.Bones.size()))
+			if (ImportNode.Kind == EFbxSkeletalImportMeshKind::StaticChildOfBone)
 			{
+				if (ImportNode.StaticChildAction == ESkeletalStaticChildImportAction::Ignore)
+				{
+					continue;
+				}
+
 				FSkeletalStaticChildMesh Child;
-				Child.SourceNodeName = Node->GetName() ? FString(Node->GetName()) : FString();
-				Child.ParentBoneIndex = ParentBoneIndex;
-				Child.ParentBoneName = ReferenceSkeleton.Bones[ParentBoneIndex].Name;
-				Child.LocalMatrixToParentBone = GlobalReferenceMatrix * ReferenceSkeleton.Bones[ParentBoneIndex].GlobalBindPose.GetInverse();
-				Child.ImportAction = ESkeletalStaticChildImportAction::MergeAsRigidPart;
+				Child.SourceNodeName  = ImportNode.SourceNodeName;
+				Child.ParentBoneIndex = ImportNode.ParentBoneIndex;
+				Child.ParentBoneName  = (ImportNode.ParentBoneIndex >= 0 && ImportNode.ParentBoneIndex < static_cast<
+					int32>(ReferenceSkeleton.Bones.size())) ? ReferenceSkeleton.Bones[ImportNode.ParentBoneIndex].Name
+				: FString();
+				Child.LocalMatrixToParentBone = ImportNode.LocalMatrixToParentBone;
+				Child.ImportAction            = ImportNode.StaticChildAction;
 				OutStaticChildMeshes.push_back(Child);
+				continue;
 			}
-			else
+
+			if (ImportNode.Kind == EFbxSkeletalImportMeshKind::Loose)
 			{
 				FFbxSplitStaticMeshReference Split;
-				Split.SourceNodeName = Node->GetName() ? FString(Node->GetName()) : FString();
-				Split.GlobalMatrix = GlobalReferenceMatrix;
+				Split.SourceNodeName = ImportNode.SourceNodeName;
+				Split.GlobalMatrix = FFbxTransformUtils::ToEngineMatrix(ImportNode.MeshNode->EvaluateGlobalTransform());
 				OutSplitStaticMeshes.push_back(Split);
 			}
 		}
 	}
+
+	static void FlipIndexWinding(TArray<uint32>& Indices)
+	{
+		for (size_t Index = 0; Index + 2 < Indices.size(); Index += 3)
+		{
+			std::swap(Indices[Index + 1], Indices[Index + 2]);
+		}
+	}
+
+	static void RecomputeBoneLocalMatrices(TArray<FBone>& Bones)
+	{
+		for (int32 BoneIndex = 0; BoneIndex < static_cast<int32>(Bones.size()); ++BoneIndex)
+		{
+			FBone& Bone = Bones[BoneIndex];
+			if (Bone.ParentIndex >= 0 && Bone.ParentIndex < static_cast<int32>(Bones.size()))
+			{
+				Bone.LocalMatrix = Bone.GlobalMatrix * Bones[Bone.ParentIndex].GlobalMatrix.GetInverse();
+			}
+			else
+			{
+				Bone.LocalMatrix = Bone.GlobalMatrix;
+			}
+			Bone.InverseBindPoseMatrix = Bone.GlobalMatrix.GetInverse();
+		}
+	}
+
+	static void TransformVerticesToEngineAssetSpace(FSkeletalMesh& Mesh, const FMatrix& AssetCorrection)
+	{
+		const FMatrix DirectionCorrection = FFbxTransformUtils::RemoveTranslationFromMatrix(AssetCorrection);
+		const FMatrix NormalCorrection    = DirectionCorrection.GetInverse().GetTransposed();
+		const bool    bReverseWinding     = FFbxTransformUtils::Determinant3x3(DirectionCorrection) < 0.0f;
+
+		for (FVertexPNCTBW& Vertex : Mesh.Vertices)
+		{
+			Vertex.Position = FFbxTransformUtils::TransformPositionByMatrix(Vertex.Position, AssetCorrection);
+			Vertex.Normal   = FFbxTransformUtils::TransformNormalByMatrix(Vertex.Normal, NormalCorrection);
+
+			const FVector Tangent = FFbxTransformUtils::TransformTangentByMatrix(
+				FVector(Vertex.Tangent.X, Vertex.Tangent.Y, Vertex.Tangent.Z),
+				DirectionCorrection,
+				Vertex.Normal
+			);
+			Vertex.Tangent = FVector4(
+				Tangent.X,
+				Tangent.Y,
+				Tangent.Z,
+				bReverseWinding ? -Vertex.Tangent.W : Vertex.Tangent.W
+			);
+		}
+
+		if (bReverseWinding)
+		{
+			FlipIndexWinding(Mesh.Indices);
+		}
+	}
+
+	static void TransformMorphTargetsToEngineAssetSpace(
+		TArray<FMorphTarget>& MorphTargets,
+		const FMatrix&        AssetCorrection
+		)
+	{
+		const FMatrix DirectionCorrection = FFbxTransformUtils::RemoveTranslationFromMatrix(AssetCorrection);
+		const FMatrix NormalCorrection    = DirectionCorrection.GetInverse().GetTransposed();
+
+		for (FMorphTarget& MorphTarget : MorphTargets)
+		{
+			for (FMorphTargetLOD& MorphLOD : MorphTarget.LODModels)
+			{
+				for (FMorphTargetShape& Shape : MorphLOD.Shapes)
+				{
+					for (FMorphTargetDelta& Delta : Shape.Deltas)
+					{
+						Delta.PositionDelta = FFbxTransformUtils::TransformVectorNoNormalizeByMatrix(
+							Delta.PositionDelta,
+							DirectionCorrection
+						);
+						Delta.NormalDelta = FFbxTransformUtils::TransformNormalByMatrix(
+							Delta.NormalDelta,
+							NormalCorrection
+						);
+
+						const FVector TangentDelta = FFbxTransformUtils::TransformVectorNoNormalizeByMatrix(
+							FVector(Delta.TangentDelta.X, Delta.TangentDelta.Y, Delta.TangentDelta.Z),
+							DirectionCorrection
+						);
+						Delta.TangentDelta = FVector4(
+							TangentDelta.X,
+							TangentDelta.Y,
+							TangentDelta.Z,
+							Delta.TangentDelta.W
+						);
+					}
+				}
+			}
+		}
+	}
+
+	static void TransformSkeletonToEngineAssetSpace(FSkeletalMesh& Mesh, const FMatrix& AssetCorrection)
+	{
+		for (FBone& Bone : Mesh.Bones)
+		{
+			Bone.GlobalMatrix          = Bone.GlobalMatrix * AssetCorrection;
+			Bone.InverseBindPoseMatrix = Bone.GlobalMatrix.GetInverse();
+		}
+		RecomputeBoneLocalMatrices(Mesh.Bones);
+	}
+
+	static void TransformSceneNodesToEngineAssetSpace(
+		TArray<FFbxImportedSceneNode>& SceneNodes,
+		const FMatrix&                 AssetCorrection
+		)
+	{
+		for (FFbxImportedSceneNode& SceneNode : SceneNodes)
+		{
+			SceneNode.GlobalMatrix         = SceneNode.GlobalMatrix * AssetCorrection;
+			SceneNode.GlobalGeometryMatrix = SceneNode.GlobalGeometryMatrix * AssetCorrection;
+		}
+	}
+
+	static void TransformSplitStaticMeshesToEngineAssetSpace(
+		TArray<FFbxSplitStaticMeshReference>& SplitStaticMeshes,
+		const FMatrix&                        AssetCorrection
+		)
+	{
+		for (FFbxSplitStaticMeshReference& SplitRef : SplitStaticMeshes)
+		{
+			SplitRef.GlobalMatrix = SplitRef.GlobalMatrix * AssetCorrection;
+		}
+	}
+
+	static void TransformAnimationRootTracksToEngineAssetSpace(
+		const FSkeletalMesh&    Mesh,
+		TArray<UAnimSequence*>& AnimSequences,
+		const FMatrix&          AssetCorrection
+		)
+	{
+		for (UAnimSequence* Sequence : AnimSequences)
+		{
+			UAnimDataModel* DataModel = Sequence ? Sequence->GetDataModel() : nullptr;
+			if (!DataModel)
+			{
+				continue;
+			}
+
+			for (FBoneAnimationTrack& Track : DataModel->GetMutableBoneAnimationTracks())
+			{
+				const int32 BoneIndex = Track.BoneTreeIndex;
+				if (BoneIndex < 0 || BoneIndex >= static_cast<int32>(Mesh.Bones.size()) || Mesh.Bones[BoneIndex].
+					ParentIndex >= 0)
+				{
+					continue;
+				}
+
+				FRawAnimSequenceTrack& Raw      = Track.InternalTrackData;
+				const size_t           KeyCount = (std::min)(
+					Raw.PosKeys.size(),
+					(std::min)(Raw.RotKeys.size(), Raw.ScaleKeys.size())
+				);
+				for (size_t KeyIndex = 0; KeyIndex < KeyCount; ++KeyIndex)
+				{
+					const FMatrix LocalMatrix = FTransform(
+						Raw.PosKeys[KeyIndex],
+						Raw.RotKeys[KeyIndex],
+						Raw.ScaleKeys[KeyIndex]
+					).ToMatrix();
+					const FTransform Corrected = FAnimationRuntime::DecomposeMatrix(LocalMatrix * AssetCorrection);
+					Raw.PosKeys[KeyIndex]      = Corrected.Location;
+					Raw.RotKeys[KeyIndex]      = Corrected.Rotation.GetNormalized();
+					Raw.ScaleKeys[KeyIndex]    = Corrected.Scale;
+				}
+			}
+		}
+	}
+
+	static FMatrix GetEngineAssetCorrection(FbxScene* Scene, const FFbxImportContext& Context)
+	{
+		const FbxAxisSystem NormalizedAxisSystem = Scene ? Scene->GetGlobalSettings().GetAxisSystem() : FbxAxisSystem(
+			FbxAxisSystem::eZAxis,
+			FbxAxisSystem::eParityOdd,
+			FbxAxisSystem::eLeftHanded
+		);
+		const bool bMirrorHandedness = Context.bHasSourceCoordSystem && Context.SourceCoordSystem !=
+		NormalizedAxisSystem.GetCoorSystem();
+		return FFbxTransformUtils::MakeAxisSystemToEngineAssetMatrix(NormalizedAxisSystem, bMirrorHandedness);
+	}
+
+	static void BakeNormalizedSkeletalSpaceToEngineAssetSpace(
+		FbxScene*                Scene,
+		const FFbxImportContext& Context,
+		FSkeletalMesh&           Mesh,
+		TArray<UAnimSequence*>*  AnimSequences,
+		FReferenceSkeleton*      OutReferenceSkeleton
+		)
+	{
+		const FMatrix AssetCorrection = GetEngineAssetCorrection(Scene, Context);
+
+		TransformVerticesToEngineAssetSpace(Mesh, AssetCorrection);
+		TransformMorphTargetsToEngineAssetSpace(Mesh.MorphTargets, AssetCorrection);
+		TransformSkeletonToEngineAssetSpace(Mesh, AssetCorrection);
+		TransformSplitStaticMeshesToEngineAssetSpace(Mesh.SplitStaticMeshes, AssetCorrection);
+		TransformSceneNodesToEngineAssetSpace(Mesh.SceneNodes, AssetCorrection);
+
+		if (AnimSequences)
+		{
+			TransformAnimationRootTracksToEngineAssetSpace(Mesh, *AnimSequences, AssetCorrection);
+		}
+
+		if (OutReferenceSkeleton)
+		{
+			RebuildReferenceSkeletonFromBones(Mesh.Bones, *OutReferenceSkeleton);
+		}
+	}
+
+	static void RefreshPostBakeValidation(FSkeletalMesh& Mesh)
+	{
+		Mesh.ImportSummary.MaxBindPoseValidationError = FFbxImportValidation::ValidateBindPoseSkinningError(Mesh);
+	}
+
 
 	static bool ImportMeshCore(
 		FbxScene*                         Scene,
@@ -158,18 +517,7 @@ namespace
 
 		FFbxMorphTargetImporter::ImportMorphTargets(Context.MorphSourcesByLOD, Context.MorphTargets, Context);
 		// Skin import can refine inverse bind poses from FBX clusters, so rebuild the reference skeleton after skin data is processed.
-		Context.ReferenceSkeleton.Bones.clear();
-		Context.ReferenceSkeleton.Bones.reserve(Context.Bones.size());
-		for (const FBone& Bone : Context.Bones)
-		{
-			FReferenceBone RefBone;
-			RefBone.Name            = Bone.Name;
-			RefBone.ParentIndex     = Bone.ParentIndex;
-			RefBone.LocalBindPose   = Bone.LocalMatrix;
-			RefBone.GlobalBindPose  = Bone.GlobalMatrix;
-			RefBone.InverseBindPose = Bone.InverseBindPoseMatrix;
-			Context.ReferenceSkeleton.Bones.push_back(RefBone);
-		}
+		RebuildReferenceSkeletonFromBones(Context.Bones, Context.ReferenceSkeleton);
 
 		const FMatrix ReferenceMeshBindInverse = GetReferenceMeshBindInverse(Context);
 		ImportSkeletalCollisionShapes(Scene, Context, Context.ReferenceSkeleton, ReferenceMeshBindInverse, OutMesh.CollisionShapes);
@@ -243,11 +591,33 @@ bool FFbxSkeletalMeshImporter::Import(FbxScene* Scene, FFbxImportContext& Contex
 	}
 
 	OutResult.AnimSequences = std::move(Context.AnimSequences);
+	BakeNormalizedSkeletalSpaceToEngineAssetSpace(
+		Scene,
+		Context,
+		OutResult.Mesh,
+		&OutResult.AnimSequences,
+		&OutResult.Skeleton
+	);
+	RefreshPostBakeValidation(OutResult.Mesh);
 	return true;
 }
 
 bool FFbxSkeletalMeshImporter::ImportMeshOnly(FbxScene* Scene, FFbxImportContext& Context, FFbxSkeletalMeshOnlyImportResult& OutResult, FString* OutMessage)
 {
 	OutResult = FFbxSkeletalMeshOnlyImportResult();
-	return ImportMeshCore(Scene, Context, OutResult.Mesh, OutResult.Materials, OutResult.SourceSkeleton, OutResult.SourceMaterials, OutMessage);
+	if (!ImportMeshCore(
+		Scene,
+		Context,
+		OutResult.Mesh,
+		OutResult.Materials,
+		OutResult.SourceSkeleton,
+		OutResult.SourceMaterials,
+		OutMessage
+	))
+	{
+		return false;
+	}
+	BakeNormalizedSkeletalSpaceToEngineAssetSpace(Scene, Context, OutResult.Mesh, nullptr, &OutResult.SourceSkeleton);
+	RefreshPostBakeValidation(OutResult.Mesh);
+	return true;
 }
