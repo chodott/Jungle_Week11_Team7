@@ -143,7 +143,7 @@ void FMeshEditorWidget::Open(UObject* Object)
 
 	ViewportClient.SetSelectedBone(Cast<USkeletalMesh>(EditedObject), -1);
 
-	FSlateApplication::Get().RegisterViewport(&MeshViewportWindow, &ViewportClient);
+	FSlateApplication::Get().RegisterViewport(&ViewportClient);
 
 	// 디스크의 기존 AnimSequence .uasset 들을 목록에 채워 둔다(런타임 Load/Save 만으론 안 잡힘).
 	FAnimationManager::Get().RefreshAvailableAnimations();
@@ -271,6 +271,7 @@ void FMeshEditorWidget::Render(float DeltaTime)
 
 	if (!ImGui::Begin(WindowTitle.c_str(), &bWindowOpen, WindowFlags))
 	{
+		// 접힌 동안엔 hover 를 보고하지 않음
 		ImGui::End();
 		if (!bWindowOpen)
 		{
@@ -393,7 +394,6 @@ void FMeshEditorWidget::RenderViewportPanel(ImVec2 Size)
 	}
 
 	VP->RequestResize(static_cast<uint32>(Size.x), static_cast<uint32>(Size.y));
-	MeshViewportWindow.SetRect(FRect(ViewportPos.x, ViewportPos.y, Size.x, Size.y));
 
 	if (VP->GetSRV())
 	{
@@ -403,6 +403,9 @@ void FMeshEditorWidget::RenderViewportPanel(ImVec2 Size)
 	{
 		ImGui::Dummy(Size);
 	}
+
+	// ImGui가 계산한 hover(다른 창에 가려지면 false)를 입력 소유권 중재에 보고.
+	FSlateApplication::Get().SetViewportImGuiHovered(&ViewportClient, ImGui::IsItemHovered());
 
 	constexpr float ToolbarHeight = 28.0f;
 	ImDrawList*     DrawList      = ImGui::GetWindowDrawList();

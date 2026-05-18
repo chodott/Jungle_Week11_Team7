@@ -151,7 +151,7 @@ void FLevelViewportLayout::Initialize(UEditorEngine* InEditor, FWindowsWindow* I
 	ActiveSlotCount = 1;
 	CurrentLayout = EViewportLayout::OnePane;
 
-	FSlateApplication::Get().RegisterViewport(ViewportWindows[0], LevelVC);
+	FSlateApplication::Get().RegisterViewport(LevelVC);
 }
 
 void FLevelViewportLayout::Release()
@@ -321,7 +321,7 @@ void FLevelViewportLayout::EnsureViewportSlots(int32 RequiredCount)
 		ViewportWindows[Idx] = new SWindow();
 		LevelVC->SetLayoutWindow(ViewportWindows[Idx]);
 
-		FSlateApplication::Get().RegisterViewport(ViewportWindows[Idx], LevelVC);
+		FSlateApplication::Get().RegisterViewport(LevelVC);
 	}
 }
 
@@ -976,6 +976,11 @@ void FLevelViewportLayout::RenderViewportUI(float DeltaTime)
 				if (IsSlotVisibleEnough(i) && ViewportWindows[i]->IsHover(MP))
 				{
 					bMouseOverViewport = true;
+					if (i < static_cast<int32>(LevelViewportClients.size()) && LevelViewportClients[i])
+					{
+						// IsWindowHovered() 이미 z-order 반영 → 슬롯 rect 와 결합한 최종 hover.
+						FSlateApplication::Get().SetViewportImGuiHovered(LevelViewportClients[i], true);
+					}
 					break;
 				}
 			}
