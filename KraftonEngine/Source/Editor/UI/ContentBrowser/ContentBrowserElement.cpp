@@ -404,6 +404,30 @@ void MeshElement::OnDoubleLeftClicked(ContentBrowserContext& Context)
 
 	if (Extension == ".fbx")
 	{
+		auto* Device = Context.EditorEngine->GetRenderer().GetFD3DDevice().GetDevice();
+
+		EAssetPackageType CachedType = EAssetPackageType::Unknown;
+
+		if (FAssetPackage::GetPackageType(FMeshManager::GetSkeletalMeshBinaryFilePath(FilePath), CachedType) &&
+			CachedType == EAssetPackageType::SkeletalMesh)
+		{
+			if (USkeletalMesh* MeshAsset = FMeshManager::LoadSkeletalMesh(FilePath, Device))
+			{
+				Context.EditorEngine->OpenAssetEditorForObject(MeshAsset);
+			}
+			return;
+		}
+
+		if (FAssetPackage::GetPackageType(FMeshManager::GetStaticMeshBinaryFilePath(FilePath), CachedType) && CachedType
+			== EAssetPackageType::StaticMesh)
+		{
+			if (UStaticMesh* MeshAsset = FMeshManager::LoadStaticMesh(FilePath, Device))
+			{
+				Context.EditorEngine->OpenAssetEditorForObject(MeshAsset);
+			}
+			return;
+		}
+
 		FString ProbeMessage;
 		const bool bHasSkinDeformer = FFbxImporter::HasSkinDeformer(FilePath, &ProbeMessage);
 
@@ -414,14 +438,14 @@ void MeshElement::OnDoubleLeftClicked(ContentBrowserContext& Context)
 
 		if (bHasSkinDeformer)
 		{
-			if (USkeletalMesh* MeshAsset = FMeshManager::LoadSkeletalMesh(FilePath, Context.EditorEngine->GetRenderer().GetFD3DDevice().GetDevice()))
+			if (USkeletalMesh* MeshAsset = FMeshManager::LoadSkeletalMesh(FilePath, Device))
 			{
 				Context.EditorEngine->OpenAssetEditorForObject(MeshAsset);
 			}
 		}
 		else
 		{
-			if (UStaticMesh* MeshAsset = FMeshManager::LoadStaticMesh(FilePath, Context.EditorEngine->GetRenderer().GetFD3DDevice().GetDevice()))
+			if (UStaticMesh* MeshAsset = FMeshManager::LoadStaticMesh(FilePath, Device))
 			{
 				Context.EditorEngine->OpenAssetEditorForObject(MeshAsset);
 			}

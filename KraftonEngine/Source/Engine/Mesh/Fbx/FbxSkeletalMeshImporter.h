@@ -11,4 +11,11 @@ class FFbxSkeletalMeshImporter
 public:
 	static bool Import(FbxScene* Scene, FFbxImportContext& Context, FFbxSkeletalMeshImportResult& OutResult, FString* OutMessage = nullptr);
 	static bool ImportMeshOnly(FbxScene* Scene, FFbxImportContext& Context, FFbxSkeletalMeshOnlyImportResult& OutResult, FString* OutMessage = nullptr);
+
+	static void BakeAnimationOnlyToEngineAssetSpace(
+		FbxScene*                Scene,
+		const FFbxImportContext& Context,
+		FReferenceSkeleton&      InOutSourceSkeleton,
+		TArray<UAnimSequence*>&  InOutAnimSequences
+		);
 };

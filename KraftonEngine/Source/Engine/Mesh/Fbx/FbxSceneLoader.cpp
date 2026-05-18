@@ -91,7 +91,7 @@ void FFbxSceneLoader::NormalizeScene(FbxScene* Scene)
 		EngineAxisSystem.ConvertScene(Scene);
 	}
 
-	const FbxSystemUnit EngineUnit = FbxSystemUnit::cm;
+	const FbxSystemUnit EngineUnit = FbxSystemUnit::m;
 	if (std::abs(Scene->GetGlobalSettings().GetSystemUnit().GetScaleFactor() - EngineUnit.GetScaleFactor()) > 1.0e-6)
 	{
 		EngineUnit.ConvertScene(Scene);

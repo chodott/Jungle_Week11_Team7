@@ -113,6 +113,13 @@ bool FFbxImporter::ImportAnimationOnly(const FString& FilePath, FFbxAnimationImp
 		return false;
 	}
 
+	FFbxSkeletalMeshImporter::BakeAnimationOnlyToEngineAssetSpace(
+		SceneHandle.Scene,
+		Context,
+		Context.ReferenceSkeleton,
+		Context.AnimSequences
+	);
+
 	OutResult.SourceSkeleton = std::move(Context.ReferenceSkeleton);
 	OutResult.AnimSequences  = std::move(Context.AnimSequences);
 	return true;

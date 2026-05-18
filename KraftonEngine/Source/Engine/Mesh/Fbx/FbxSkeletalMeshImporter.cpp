@@ -621,3 +621,22 @@ bool FFbxSkeletalMeshImporter::ImportMeshOnly(FbxScene* Scene, FFbxImportContext
 	RefreshPostBakeValidation(OutResult.Mesh);
 	return true;
 }
+
+void FFbxSkeletalMeshImporter::BakeAnimationOnlyToEngineAssetSpace(
+	FbxScene*                Scene,
+	const FFbxImportContext& Context,
+	FReferenceSkeleton&      InOutSourceSkeleton,
+	TArray<UAnimSequence*>&  InOutAnimSequences
+	)
+{
+	FSkeletalMesh TemporaryMesh;
+	TemporaryMesh.Bones = Context.Bones;
+
+	BakeNormalizedSkeletalSpaceToEngineAssetSpace(
+		Scene,
+		Context,
+		TemporaryMesh,
+		&InOutAnimSequences,
+		&InOutSourceSkeleton
+	);
+}
